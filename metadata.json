@@ -1,0 +1,6 @@
+{
+  "name": "Instituto SER — Gestão Integrada",
+  "description": "Sistema completo de gestão administrativa, financeira, operacional, educacional, de saúde e impacto social do Instituto SER.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
