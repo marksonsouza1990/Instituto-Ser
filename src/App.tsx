@@ -165,6 +165,7 @@ const NAV_ITEMS: NavItem[] = [
 
 export default function App() {
   const [bootstrapped, setBootstrapped] = useState<boolean | null>(null);
+  const [apiStatusError, setApiStatusError] = useState<string | null>(null);
   const [user, setUser] = useState<AuthUser | null>(null);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
@@ -173,10 +174,24 @@ export default function App() {
   const userRoles = getUserRoles(user);
   const isAdmin = userRoles.includes('admin');
 
+  async function checkAuthStatus() {
+    setApiStatusError(null);
+    try {
+      const res = await apiRequest<{ bootstrapped: boolean }>('/api/auth/status');
+      setBootstrapped(res.bootstrapped);
+      setApiStatusError(null);
+    } catch (err) {
+      setBootstrapped((prev) => (prev === null ? true : prev));
+      setApiStatusError(
+        err instanceof Error
+          ? err.message
+          : 'Não foi possível conectar ao servidor da plataforma.'
+      );
+    }
+  }
+
   useEffect(() => {
-    apiRequest<{ bootstrapped: boolean }>('/api/auth/status')
-      .then((res) => setBootstrapped(res.bootstrapped))
-      .catch(() => setBootstrapped(true));
+    void checkAuthStatus();
   }, []);
 
   useEffect(() => {
@@ -217,9 +232,12 @@ export default function App() {
     return (
       <LoginView
         bootstrapped={bootstrapped}
+        apiStatusError={apiStatusError}
+        onRetryConnection={checkAuthStatus}
         onAuthenticated={(loggedUser) => {
           setUser(loggedUser);
           setBootstrapped(true);
+          setApiStatusError(null);
           setActiveTab('dashboard');
         }}
       />

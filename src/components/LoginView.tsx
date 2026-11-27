@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { Eye, EyeOff, Lock, Mail, ShieldCheck, User, UserPlus } from 'lucide-react';
 import { apiRequest, setSessionToken } from '../lib/api';
 import { BrandLogo, BrandStrip, OfficialLogoImage } from './BrandLogo';
@@ -6,6 +6,8 @@ import { ROLE_LABELS, type AuthUser, type UserRole } from '../types';
 
 interface LoginViewProps {
   bootstrapped: boolean;
+  apiStatusError?: string | null;
+  onRetryConnection?: () => Promise<void> | void;
   onAuthenticated: (user: AuthUser) => void;
 }
 
@@ -43,10 +45,22 @@ const REQUESTABLE_ROLES: UserRole[] = [
   'diretoria',
 ];
 
-export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
+export function LoginView({
+  bootstrapped,
+  apiStatusError,
+  onRetryConnection,
+  onAuthenticated,
+}: LoginViewProps) {
   const [mode, setMode] = useState<'login' | 'bootstrap' | 'request' | 'forgot' | 'reset'>(
     bootstrapped ? 'login' : 'bootstrap'
   );
+  const [retryingConnection, setRetryingConnection] = useState(false);
+
+  useEffect(() => {
+    if (!bootstrapped && mode === 'login') {
+      setMode('bootstrap');
+    }
+  }, [bootstrapped, mode]);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
   const [requestedRoles, setRequestedRoles] = useState<UserRole[]>(['voluntario']);
@@ -276,6 +290,32 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
                         : 'Informe o e-mail, o código fornecido e sua nova senha.'}
               </p>
             </div>
+
+            {apiStatusError && !error && (
+              <div
+                role="alert"
+                className="mb-4 p-3 rounded-lg bg-amber-50 border border-amber-200 text-xs text-amber-900 space-y-2"
+              >
+                <div>{apiStatusError}</div>
+                {onRetryConnection && (
+                  <button
+                    type="button"
+                    disabled={retryingConnection}
+                    onClick={async () => {
+                      setRetryingConnection(true);
+                      try {
+                        await onRetryConnection();
+                      } finally {
+                        setRetryingConnection(false);
+                      }
+                    }}
+                    className="inline-flex items-center px-2.5 py-1 rounded bg-amber-900 text-white font-medium hover:bg-amber-800 disabled:opacity-60 cursor-pointer"
+                  >
+                    {retryingConnection ? 'Verificando conexão...' : 'Tentar reconectar'}
+                  </button>
+                )}
+              </div>
+            )}
 
             {error && (
               <div

@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'node:fs';
 import path from 'node:path';
 import dotenv from 'dotenv';
 import { initSchema } from './server/db.ts';
@@ -22,8 +23,12 @@ async function startServer() {
     res.status(404).json({ error: 'Rota da API não encontrada.' });
   });
 
-  if (process.env.NODE_ENV === 'production') {
-    const distDir = path.resolve(process.cwd(), 'dist');
+  const distDir = path.resolve(process.cwd(), 'dist');
+  const shouldServeStatic =
+    process.env.NODE_ENV === 'production' ||
+    (process.env.NODE_ENV !== 'development' && fs.existsSync(path.join(distDir, 'index.html')));
+
+  if (shouldServeStatic) {
     app.use(express.static(distDir));
     app.get('*splat', (_req, res) => {
       res.sendFile(path.join(distDir, 'index.html'));
