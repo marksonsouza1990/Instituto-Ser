@@ -42,7 +42,9 @@ async function startServer() {
     app.use(vite.middlewares);
   }
 
-  const port = Number(process.env.PORT) || 3000;
+  const portArgIdx = process.argv.indexOf('--port');
+  const cliPort = portArgIdx !== -1 ? Number(process.argv[portArgIdx + 1]) : NaN;
+  const port = (Number.isFinite(cliPort) && cliPort > 0 ? cliPort : Number(process.env.PORT)) || 3000;
   app.listen(port, '0.0.0.0', () => {
     console.log(`Instituto SER — Gestão Integrada em execução na porta ${port}`);
   });

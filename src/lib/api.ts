@@ -35,7 +35,7 @@ export async function apiRequest<T>(
   }
 
   let res: Response | null = null;
-  for (let attempt = 0; attempt < 3; attempt++) {
+  for (let attempt = 0; attempt < 5; attempt++) {
     res = await fetch(path, {
       credentials: 'same-origin',
       ...options,
@@ -46,7 +46,7 @@ export async function apiRequest<T>(
     const isTransientProxyMiss =
       isNonJson &&
       (res.ok || res.status === 404 || res.status === 502 || res.status === 503 || res.status === 504);
-    if (!isTransientProxyMiss || attempt === 2) {
+    if (!isTransientProxyMiss || attempt === 4) {
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 900));
