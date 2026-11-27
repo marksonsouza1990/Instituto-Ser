@@ -418,6 +418,31 @@ export function initSchema(): void {
       db.exec('PRAGMA foreign_keys = ON;');
     }
   }
+
+  // Ensure first-access approval and multi-role columns exist on users table
+  const userCols = db.prepare(`PRAGMA table_info(users)`).all() as { name: string }[];
+  const userAdditions: [string, string][] = [
+    ['approval_status', `TEXT NOT NULL DEFAULT 'aprovado'`],
+    ['requested_role', `TEXT`],
+    ['approval_notes', `TEXT NOT NULL DEFAULT ''`],
+    ['approved_by', `TEXT`],
+    ['approved_at', `TEXT`],
+    ['roles_json', `TEXT NOT NULL DEFAULT '[]'`],
+    ['requested_roles_json', `TEXT NOT NULL DEFAULT '[]'`],
+  ];
+  for (const [colName, colDef] of userAdditions) {
+    if (!userCols.some((c) => c.name === colName)) {
+      db.exec(`ALTER TABLE users ADD COLUMN ${colName} ${colDef};`);
+    }
+  }
+
+  db.exec(
+    `UPDATE users SET roles_json = '["' || role || '"]' WHERE roles_json IS NULL OR roles_json = '' OR roles_json = '[]';`
+  );
+  db.exec(
+    `UPDATE users SET requested_roles_json = '["' || requested_role || '"]'
+     WHERE requested_role IS NOT NULL AND requested_role != '' AND (requested_roles_json IS NULL OR requested_roles_json = '' OR requested_roles_json = '[]');`
+  );
 }
 
 export function logAudit(params: {

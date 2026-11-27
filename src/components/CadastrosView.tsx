@@ -20,6 +20,7 @@ import { formatBRL, formatDateBR } from '../lib/format';
 import {
   FINANCE_ROLES,
   HEALTH_ROLES,
+  hasAnyRole,
   type ActivityType,
   type AttendanceClass,
   type Donor,
@@ -27,10 +28,10 @@ import {
   type InstitutionalEvent,
   type Patient,
   type Project,
+  type RoleInput,
   type Student,
   type StudentStatus,
   type Supplier,
-  type UserRole,
   type Volunteer,
 } from '../types';
 
@@ -55,20 +56,20 @@ const PROGRAMS_LIST = [
   'Assistência Familiar',
 ];
 
-export function CadastrosView({ role }: { role: UserRole }) {
-  const canSeeFinance = FINANCE_ROLES.includes(role);
-  const canSeeHealth = HEALTH_ROLES.includes(role);
+export function CadastrosView({ role }: { role: RoleInput }) {
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
 
-  const canEditVolunteers = ['admin', 'coordenacao_social', 'diretoria'].includes(role);
-  const canEditActivities = ['admin', 'diretoria', 'coordenacao_social', 'professor'].includes(role);
-  const canEditDonors = ['admin', 'financeiro', 'diretoria', 'coordenacao_social'].includes(role);
-  const canEditSuppliers = FINANCE_ROLES.includes(role);
-  const canEditProjects = ['admin', 'diretoria', 'coordenacao_social'].includes(role);
-  const canEditFamilies = ['admin', 'coordenacao_social', 'diretoria'].includes(role);
-  const canEditStudents = ['admin', 'coordenacao_social', 'professor'].includes(role);
-  const canEditPatients = HEALTH_ROLES.includes(role);
-  const canEditEvents = ['admin', 'diretoria', 'coordenacao_social'].includes(role);
-  const canSeeFamilies = ['admin', 'diretoria', 'coordenacao_social', ...HEALTH_ROLES, 'professor'].includes(role);
+  const canEditVolunteers = hasAnyRole(role, ['admin', 'coordenacao_social', 'diretoria']);
+  const canEditActivities = hasAnyRole(role, ['admin', 'diretoria', 'coordenacao_social', 'professor']);
+  const canEditDonors = hasAnyRole(role, ['admin', 'financeiro', 'diretoria', 'coordenacao_social']);
+  const canEditSuppliers = hasAnyRole(role, FINANCE_ROLES);
+  const canEditProjects = hasAnyRole(role, ['admin', 'diretoria', 'coordenacao_social']);
+  const canEditFamilies = hasAnyRole(role, ['admin', 'coordenacao_social', 'diretoria']);
+  const canEditStudents = hasAnyRole(role, ['admin', 'coordenacao_social', 'professor']);
+  const canEditPatients = hasAnyRole(role, HEALTH_ROLES);
+  const canEditEvents = hasAnyRole(role, ['admin', 'diretoria', 'coordenacao_social']);
+  const canSeeFamilies = hasAnyRole(role, ['admin', 'diretoria', 'coordenacao_social', ...HEALTH_ROLES, 'professor']);
 
   const tabs: { id: RegistryTab; label: string; icon: typeof Users; visible: boolean }[] = [
     { id: 'voluntarios', label: 'Voluntários', icon: Users, visible: true },

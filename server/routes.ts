@@ -3,8 +3,11 @@ import type { Express, Response } from 'express';
 import { db, logAudit } from './db.ts';
 import {
   type AuthRequest,
+  VALID_ROLES,
   hashPassword,
+  hasUserRole,
   isAdminBootstrapped,
+  parseUserRoles,
   requireAuth,
   requireRole,
   signAuthToken,
@@ -12,20 +15,28 @@ import {
 } from './auth.ts';
 import type { DashboardPeriod, UserRole } from '../src/types.ts';
 
-const VALID_ROLES: UserRole[] = [
-  'admin',
-  'diretoria',
-  'financeiro',
-  'coordenacao_social',
-  'saude',
-  'psicologo',
-  'medico',
-  'professor',
-  'voluntario',
-];
-
 const FINANCE_ROLES: UserRole[] = ['admin', 'financeiro'];
 const HEALTH_ROLES: UserRole[] = ['admin', 'saude', 'psicologo', 'medico'];
+
+function normalizeRolesInput(
+  rawRoles: unknown,
+  rawSingleRole: unknown,
+  allowAdmin = true
+): UserRole[] {
+  const allowed = allowAdmin ? VALID_ROLES : VALID_ROLES.filter((r) => r !== 'admin');
+  const out: UserRole[] = [];
+  if (Array.isArray(rawRoles)) {
+    for (const item of rawRoles) {
+      if (typeof item === 'string' && allowed.includes(item as UserRole) && !out.includes(item as UserRole)) {
+        out.push(item as UserRole);
+      }
+    }
+  }
+  if (typeof rawSingleRole === 'string' && allowed.includes(rawSingleRole as UserRole) && !out.includes(rawSingleRole as UserRole)) {
+    out.push(rawSingleRole as UserRole);
+  }
+  return out;
+}
 
 function getPeriodCutoff(period: DashboardPeriod): { startDate: string; monthsBack: number } {
   const ref = new Date('2026-11-23T12:00:00Z');
@@ -110,19 +121,20 @@ export function registerRoutes(app: Express): void {
     const passwordHash = hashPassword(password);
     const result = db
       .prepare(
-        `INSERT INTO users (name, email, password_hash, role, active, last_login_at)
-         VALUES (?, ?, ?, 'admin', 1, datetime('now'))`
+        `INSERT INTO users (name, email, password_hash, role, roles_json, active, approval_status, approved_by, approved_at, last_login_at)
+         VALUES (?, ?, ?, 'admin', '["admin"]', 1, 'aprovado', 'Configuração Inicial', datetime('now'), datetime('now'))`
       )
       .run(name, email, passwordHash);
 
     const uid = Number(result.lastInsertRowid);
     const user = db
-      .prepare(`SELECT id, name, email, role, specialty, active, created_at, last_login_at FROM users WHERE id = ?`)
+      .prepare(`SELECT id, name, email, role, roles_json, specialty, active, approval_status, created_at, last_login_at FROM users WHERE id = ?`)
       .get(uid) as {
       id: number;
       name: string;
       email: string;
       role: UserRole;
+      roles_json: string | null;
       specialty: string | null;
       active: number;
       created_at: string;
@@ -160,10 +172,82 @@ export function registerRoutes(app: Express): void {
       ipAddress: req.ip,
     });
 
-    const token = signAuthToken({ uid, email, role: 'admin' });
+    const token = signAuthToken({ uid, email, role: 'admin', roles: ['admin'] });
     res.status(201).json({
       token,
-      user: { ...user, active: true },
+      user: { ...user, roles: ['admin'] as UserRole[], active: true },
+    });
+  });
+
+  app.post('/api/auth/request-access', (req, res) => {
+    const name = safeString(req.body?.name, 160);
+    const email = safeString(req.body?.email, 160).toLowerCase();
+    const password = typeof req.body?.password === 'string' ? req.body.password : '';
+    const parsedRequestedRoles = normalizeRolesInput(req.body?.requested_roles, req.body?.requested_role, false);
+    const requestedRoles: UserRole[] =
+      parsedRequestedRoles.length > 0 ? parsedRequestedRoles : ['voluntario'];
+    const primaryRequestedRole: UserRole = requestedRoles[0];
+    const specialty = safeString(req.body?.specialty, 120) || null;
+    const approvalNotes = safeString(req.body?.approval_notes, 300);
+
+    if (!name || !email || !email.includes('@')) {
+      res.status(400).json({ error: 'Informe nome completo e e-mail válido.' });
+      return;
+    }
+    if (password.length < 6) {
+      res.status(400).json({ error: 'A senha deve ter pelo menos 6 caracteres.' });
+      return;
+    }
+
+    const existing = db
+      .prepare(`SELECT id, approval_status FROM users WHERE lower(email) = ?`)
+      .get(email) as { id: number; approval_status?: string } | undefined;
+
+    if (existing) {
+      if (existing.approval_status === 'pendente') {
+        res.status(409).json({
+          error: 'Já existe uma solicitação para este e-mail aguardando autorização do administrador.',
+        });
+        return;
+      }
+      res.status(409).json({
+        error: 'Este e-mail já está cadastrado. Utilize o login normal ou solicite revisão ao administrador.',
+      });
+      return;
+    }
+
+    const rolesJson = JSON.stringify(requestedRoles);
+    const r = db
+      .prepare(
+        `INSERT INTO users (name, email, password_hash, role, roles_json, requested_role, requested_roles_json, specialty, active, approval_status, approval_notes)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 'pendente', ?)`
+      )
+      .run(
+        name,
+        email,
+        hashPassword(password),
+        primaryRequestedRole,
+        rolesJson,
+        primaryRequestedRole,
+        rolesJson,
+        specialty,
+        approvalNotes
+      );
+
+    logAudit({
+      userId: Number(r.lastInsertRowid),
+      userName: name,
+      userRole: requestedRoles.join(', '),
+      action: 'ACCESS_REQUEST',
+      entityType: 'users',
+      entityId: Number(r.lastInsertRowid),
+      details: `Solicitação de primeiro acesso registrada por ${name} (${email}) para as categorias: ${requestedRoles.join(', ')}.`,
+      ipAddress: req.ip,
+    });
+
+    res.status(201).json({
+      message:
+        'Solicitação de primeiro acesso enviada com sucesso! Aguarde a autorização do administrador para entrar na plataforma.',
     });
   });
 
@@ -186,8 +270,10 @@ export function registerRoutes(app: Express): void {
           email: string;
           password_hash: string;
           role: UserRole;
+          roles_json: string | null;
           specialty: string | null;
           active: number;
+          approval_status?: 'pendente' | 'aprovado' | 'recusado';
           created_at: string;
           last_login_at: string | null;
         }
@@ -198,15 +284,15 @@ export function registerRoutes(app: Express): void {
       let adminUser = userRow;
       if (!adminUser) {
         const anyAdmin = db
-          .prepare(`SELECT * FROM users WHERE role = 'admin' ORDER BY id ASC LIMIT 1`)
+          .prepare(`SELECT * FROM users WHERE role = 'admin' OR roles_json LIKE '%"admin"%' ORDER BY id ASC LIMIT 1`)
           .get() as typeof userRow;
         if (anyAdmin) {
           adminUser = anyAdmin;
         } else {
           const inserted = db
             .prepare(
-              `INSERT INTO users (name, email, password_hash, role, active, last_login_at)
-               VALUES (?, ?, ?, 'admin', 1, datetime('now'))`
+              `INSERT INTO users (name, email, password_hash, role, roles_json, active, approval_status, approved_by, approved_at, last_login_at)
+               VALUES (?, ?, ?, 'admin', '["admin"]', 1, 'aprovado', 'Código Administrativo', datetime('now'), datetime('now'))`
             )
             .run('Administrador Instituto SER', email, hashPassword(envPasscode));
           adminUser = db
@@ -214,12 +300,13 @@ export function registerRoutes(app: Express): void {
             .get(Number(inserted.lastInsertRowid)) as typeof userRow;
         }
       }
-      if (adminUser && adminUser.role === 'admin' && adminUser.active === 1) {
+      const adminRoles = adminUser ? parseUserRoles(adminUser.role, adminUser.roles_json) : [];
+      if (adminUser && adminRoles.includes('admin') && adminUser.active === 1) {
         db.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).run(adminUser.id);
         logAudit({
           userId: adminUser.id,
           userName: adminUser.name,
-          userRole: adminUser.role,
+          userRole: adminRoles.join(', '),
           action: 'LOGIN',
           entityType: 'auth',
           entityId: adminUser.id,
@@ -229,7 +316,8 @@ export function registerRoutes(app: Express): void {
         const token = signAuthToken({
           uid: adminUser.id,
           email: adminUser.email,
-          role: adminUser.role,
+          role: adminRoles[0],
+          roles: adminRoles,
         });
         res.json({
           token,
@@ -237,9 +325,11 @@ export function registerRoutes(app: Express): void {
             id: adminUser.id,
             name: adminUser.name,
             email: adminUser.email,
-            role: adminUser.role,
+            role: adminRoles[0],
+            roles: adminRoles,
             specialty: adminUser.specialty,
             active: true,
+            approval_status: 'aprovado',
             created_at: adminUser.created_at,
             last_login_at: new Date().toISOString(),
           },
@@ -248,33 +338,60 @@ export function registerRoutes(app: Express): void {
       }
     }
 
-    if (!userRow || userRow.active !== 1 || !verifyPassword(password, userRow.password_hash)) {
+    if (!userRow || !verifyPassword(password, userRow.password_hash)) {
       res.status(401).json({ error: 'E-mail ou senha inválidos.' });
       return;
     }
 
+    if (userRow.approval_status === 'pendente') {
+      res.status(403).json({
+        error: 'Seu primeiro acesso ainda está aguardando autorização do administrador.',
+      });
+      return;
+    }
+
+    if (userRow.approval_status === 'recusado') {
+      res.status(403).json({
+        error: 'Sua solicitação de primeiro acesso foi recusada pela administração.',
+      });
+      return;
+    }
+
+    if (userRow.active !== 1) {
+      res.status(401).json({ error: 'Usuário inativo. Entre em contato com o administrador.' });
+      return;
+    }
+
+    const userRoles = parseUserRoles(userRow.role, userRow.roles_json);
     db.prepare(`UPDATE users SET last_login_at = datetime('now') WHERE id = ?`).run(userRow.id);
     logAudit({
       userId: userRow.id,
       userName: userRow.name,
-      userRole: userRow.role,
+      userRole: userRoles.join(', '),
       action: 'LOGIN',
       entityType: 'auth',
       entityId: userRow.id,
-      details: `Acesso realizado no sistema (${userRow.role}).`,
+      details: `Acesso realizado no sistema (${userRoles.join(', ')}).`,
       ipAddress: req.ip,
     });
 
-    const token = signAuthToken({ uid: userRow.id, email: userRow.email, role: userRow.role });
+    const token = signAuthToken({
+      uid: userRow.id,
+      email: userRow.email,
+      role: userRoles[0],
+      roles: userRoles,
+    });
     res.json({
       token,
       user: {
         id: userRow.id,
         name: userRow.name,
         email: userRow.email,
-        role: userRow.role,
+        role: userRoles[0],
+        roles: userRoles,
         specialty: userRow.specialty,
         active: true,
+        approval_status: userRow.approval_status || 'aprovado',
         created_at: userRow.created_at,
         last_login_at: new Date().toISOString(),
       },
@@ -288,7 +405,10 @@ export function registerRoutes(app: Express): void {
       return;
     }
     const user = db
-      .prepare(`SELECT id, name, email, role FROM users WHERE lower(email) = ? AND active = 1`)
+      .prepare(
+        `SELECT id, name, email, role FROM users
+         WHERE lower(email) = ? AND active = 1 AND (approval_status IS NULL OR approval_status = 'aprovado')`
+      )
       .get(email) as { id: number; name: string; email: string; role: string } | undefined;
 
     if (user) {
@@ -386,9 +506,8 @@ export function registerRoutes(app: Express): void {
 
     const { startDate, monthsBack } = getPeriodCutoff(period);
     const months = getMonthRange(monthsBack);
-    const role = req.authUser!.role;
-    const canSeeFinance = FINANCE_ROLES.includes(role);
-    const canSeeHealth = HEALTH_ROLES.includes(role);
+    const canSeeFinance = hasUserRole(req.authUser, FINANCE_ROLES);
+    const canSeeHealth = hasUserRole(req.authUser, HEALTH_ROLES);
 
     const totalStudents = (db.prepare(`SELECT COUNT(*) as c FROM students`).get() as { c: number }).c;
     const activeStudents = (
@@ -1004,7 +1123,7 @@ export function registerRoutes(app: Express): void {
          ORDER BY uploaded_at DESC`
       )
       .all(id);
-    const canSeeHealth = HEALTH_ROLES.includes(req.authUser!.role);
+    const canSeeHealth = hasUserRole(req.authUser, HEALTH_ROLES);
     const appointments = canSeeHealth
       ? db
           .prepare(
@@ -1777,7 +1896,7 @@ export function registerRoutes(app: Express): void {
 
   // ---------------- PROJECTS ----------------
   app.get('/api/projects', requireAuth, (req: AuthRequest, res) => {
-    const canSeeFinance = FINANCE_ROLES.includes(req.authUser!.role);
+    const canSeeFinance = hasUserRole(req.authUser, FINANCE_ROLES);
     const rows = db
       .prepare(
         `SELECT p.*,
@@ -1883,7 +2002,7 @@ export function registerRoutes(app: Express): void {
       const manager_name = safeString(req.body?.manager_name, 160) || String(existing.manager_name);
       const start_date = safeString(req.body?.start_date, 20) || String(existing.start_date);
       const end_date = safeString(req.body?.end_date, 20) || String(existing.end_date);
-      const canEditBudget = FINANCE_ROLES.includes(req.authUser!.role);
+      const canEditBudget = hasUserRole(req.authUser, FINANCE_ROLES);
       const planned_budget = canEditBudget
         ? Math.max(0, safeNumber(req.body?.planned_budget, Number(existing.planned_budget)))
         : Number(existing.planned_budget);
@@ -2078,7 +2197,7 @@ export function registerRoutes(app: Express): void {
 
   // ---------------- DONORS ----------------
   app.get('/api/donors', requireAuth, (req: AuthRequest, res) => {
-    const canSeeFinance = FINANCE_ROLES.includes(req.authUser!.role);
+    const canSeeFinance = hasUserRole(req.authUser, FINANCE_ROLES);
     const donors = db
       .prepare(
         `SELECT d.*,
@@ -2869,17 +2988,22 @@ export function registerRoutes(app: Express): void {
 
   // ---------------- DOCUMENTS ----------------
   app.get('/api/documents', requireAuth, (req: AuthRequest, res) => {
-    const role = req.authUser!.role;
-    const allowedLevels = ['geral'];
-    if (role === 'admin') {
-      allowedLevels.push('restrito_saude', 'restrito_financeiro', 'restrito_diretoria');
-    } else if (HEALTH_ROLES.includes(role)) {
-      allowedLevels.push('restrito_saude');
-    } else if (role === 'financeiro') {
-      allowedLevels.push('restrito_financeiro');
-    } else if (role === 'diretoria') {
-      allowedLevels.push('restrito_diretoria');
+    const allowedSet = new Set<string>(['geral']);
+    if (hasUserRole(req.authUser, ['admin'])) {
+      allowedSet.add('restrito_saude');
+      allowedSet.add('restrito_financeiro');
+      allowedSet.add('restrito_diretoria');
     }
+    if (hasUserRole(req.authUser, HEALTH_ROLES)) {
+      allowedSet.add('restrito_saude');
+    }
+    if (hasUserRole(req.authUser, FINANCE_ROLES)) {
+      allowedSet.add('restrito_financeiro');
+    }
+    if (hasUserRole(req.authUser, ['admin', 'diretoria'])) {
+      allowedSet.add('restrito_diretoria');
+    }
+    const allowedLevels = Array.from(allowedSet);
 
     const placeholders = allowedLevels.map(() => '?').join(',');
     const rows = db
@@ -2924,9 +3048,9 @@ export function registerRoutes(app: Express): void {
       }
 
       if (
-        (access_level === 'restrito_financeiro' && !FINANCE_ROLES.includes(callerRole)) ||
-        (access_level === 'restrito_saude' && !HEALTH_ROLES.includes(callerRole)) ||
-        (access_level === 'restrito_diretoria' && !['admin', 'diretoria'].includes(callerRole))
+        (access_level === 'restrito_financeiro' && !hasUserRole(req.authUser, FINANCE_ROLES)) ||
+        (access_level === 'restrito_saude' && !hasUserRole(req.authUser, HEALTH_ROLES)) ||
+        (access_level === 'restrito_diretoria' && !hasUserRole(req.authUser, ['admin', 'diretoria']))
       ) {
         res.status(403).json({ error: 'Sem permissão para publicar documento neste nível de acesso restrito.' });
         return;
@@ -2982,12 +3106,11 @@ export function registerRoutes(app: Express): void {
       res.status(404).json({ error: 'Documento não encontrado.' });
       return;
     }
-    const role = req.authUser!.role;
     const lvl = String(doc.access_level);
     if (
-      (lvl === 'restrito_saude' && !HEALTH_ROLES.includes(role)) ||
-      (lvl === 'restrito_financeiro' && !FINANCE_ROLES.includes(role)) ||
-      (lvl === 'restrito_diretoria' && !['admin', 'diretoria'].includes(role))
+      (lvl === 'restrito_saude' && !hasUserRole(req.authUser, HEALTH_ROLES)) ||
+      (lvl === 'restrito_financeiro' && !hasUserRole(req.authUser, FINANCE_ROLES)) ||
+      (lvl === 'restrito_diretoria' && !hasUserRole(req.authUser, ['admin', 'diretoria']))
     ) {
       res.status(403).json({ error: 'Sem permissão para acessar este documento restrito.' });
       return;
@@ -3115,8 +3238,7 @@ export function registerRoutes(app: Express): void {
   app.get('/api/agenda', requireAuth, (req: AuthRequest, res) => {
     const startDate = safeString(req.query.startDate, 20);
     const endDate = safeString(req.query.endDate, 20);
-    const role = req.authUser!.role;
-    const canSeeHealth = HEALTH_ROLES.includes(role);
+    const canSeeHealth = hasUserRole(req.authUser, HEALTH_ROLES);
 
     const events =
       startDate && endDate
@@ -3207,9 +3329,8 @@ export function registerRoutes(app: Express): void {
   app.get('/api/reports', requireAuth, (req: AuthRequest, res) => {
     const startDate = safeString(req.query.startDate, 20) || '2026-01-01';
     const endDate = safeString(req.query.endDate, 20) || '2026-12-31';
-    const role = req.authUser!.role;
-    const canSeeFinance = FINANCE_ROLES.includes(role);
-    const canSeeHealth = HEALTH_ROLES.includes(role);
+    const canSeeFinance = hasUserRole(req.authUser, FINANCE_ROLES);
+    const canSeeHealth = hasUserRole(req.authUser, HEALTH_ROLES);
 
     const students = db
       .prepare(
@@ -3314,22 +3435,46 @@ export function registerRoutes(app: Express): void {
   app.get('/api/users', requireAuth, requireRole('admin'), (_req, res) => {
     const rows = db
       .prepare(
-        `SELECT id, name, email, role, specialty, active, created_at, last_login_at
-         FROM users ORDER BY id ASC`
+        `SELECT id, name, email, role, roles_json, requested_role, requested_roles_json, specialty, active, approval_status, approval_notes, approved_by, approved_at, created_at, last_login_at
+         FROM users
+         ORDER BY CASE WHEN approval_status = 'pendente' THEN 0 ELSE 1 END ASC, id ASC`
       )
       .all() as Record<string, unknown>[];
-    res.json(rows.map((u) => ({ ...u, active: u.active === 1 })));
+    res.json(
+      rows.map((u) => {
+        const roles = parseUserRoles(u.role as UserRole, u.roles_json as string | null);
+        const requestedRoles = u.requested_role
+          ? parseUserRoles(u.requested_role as UserRole, u.requested_roles_json as string | null)
+          : [];
+        return {
+          ...u,
+          role: roles[0],
+          roles,
+          requested_role: requestedRoles[0] ?? u.requested_role ?? null,
+          requested_roles: requestedRoles,
+          active: u.active === 1,
+          approval_status: u.approval_status || 'aprovado',
+        };
+      })
+    );
+  });
+
+  app.get('/api/users/pending-count', requireAuth, requireRole('admin'), (_req, res) => {
+    const row = db
+      .prepare(`SELECT COUNT(*) as cnt FROM users WHERE approval_status = 'pendente'`)
+      .get() as { cnt: number };
+    res.json({ pendingCount: row.cnt });
   });
 
   app.post('/api/users', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
     const name = safeString(req.body?.name, 160);
     const email = safeString(req.body?.email, 160).toLowerCase();
-    const role = safeString(req.body?.role, 40) as UserRole;
+    const roles = normalizeRolesInput(req.body?.roles, req.body?.role, true);
     const specialty = safeString(req.body?.specialty, 100) || null;
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
 
-    if (!name || !email || !VALID_ROLES.includes(role) || password.length < 6) {
-      res.status(400).json({ error: 'Preencha nome, e-mail válido, perfil e senha (mín. 6 caracteres).' });
+    if (!name || !email || roles.length === 0 || password.length < 6) {
+      res.status(400).json({ error: 'Preencha nome, e-mail válido, ao menos uma categoria e senha (mín. 6 caracteres).' });
       return;
     }
 
@@ -3339,30 +3484,114 @@ export function registerRoutes(app: Express): void {
       return;
     }
 
+    const primaryRole = roles[0];
+    const rolesJson = JSON.stringify(roles);
     const r = db
       .prepare(
-        `INSERT INTO users (name, email, password_hash, role, specialty, active)
-         VALUES (?, ?, ?, ?, ?, 1)`
+        `INSERT INTO users (name, email, password_hash, role, roles_json, specialty, active, approval_status, approved_by, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, 'aprovado', ?, datetime('now'))`
       )
-      .run(name, email, hashPassword(password), role, specialty);
+      .run(name, email, hashPassword(password), primaryRole, rolesJson, specialty, req.authUser!.name);
 
     logAudit({
       userId: req.authUser!.id,
       userName: req.authUser!.name,
-      userRole: req.authUser!.role,
+      userRole: req.authUser!.roles.join(', '),
       action: 'CREATE',
       entityType: 'users',
       entityId: Number(r.lastInsertRowid),
-      details: `Usuário ${name} (${email}) criado com perfil ${role}.`,
+      details: `Usuário ${name} (${email}) criado e autorizado com categorias: ${roles.join(', ')}.`,
     });
 
-    res.status(201).json(
-      db
-        .prepare(
-          `SELECT id, name, email, role, specialty, active, created_at, last_login_at FROM users WHERE id = ?`
-        )
-        .get(Number(r.lastInsertRowid))
-    );
+    const created = db
+      .prepare(
+        `SELECT id, name, email, role, roles_json, requested_role, requested_roles_json, specialty, active, approval_status, approval_notes, approved_by, approved_at, created_at, last_login_at
+         FROM users WHERE id = ?`
+      )
+      .get(Number(r.lastInsertRowid)) as Record<string, unknown>;
+
+    res.status(201).json({
+      ...created,
+      role: primaryRole,
+      roles,
+      active: created.active === 1,
+    });
+  });
+
+  app.post('/api/users/:id/decision', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
+    const id = Number(req.params.id);
+    const existing = db.prepare(`SELECT * FROM users WHERE id = ?`).get(id) as
+      | Record<string, unknown>
+      | undefined;
+    if (!existing) {
+      res.status(404).json({ error: 'Solicitação de usuário não encontrada.' });
+      return;
+    }
+    if (id === req.authUser!.id) {
+      res.status(400).json({ error: 'Você não pode alterar o status de autorização da sua própria conta.' });
+      return;
+    }
+
+    const decision = safeString(req.body?.decision, 20);
+    if (decision !== 'aprovar' && decision !== 'recusar') {
+      res.status(400).json({ error: 'Decisão inválida. Utilize "aprovar" ou "recusar".' });
+      return;
+    }
+
+    const submittedRoles = normalizeRolesInput(req.body?.roles, req.body?.role, true);
+    const existingRoles = parseUserRoles(existing.role as UserRole, existing.roles_json as string | null);
+    const nextRoles = submittedRoles.length > 0 ? submittedRoles : existingRoles;
+    const nextPrimaryRole = nextRoles[0];
+    const nextRolesJson = JSON.stringify(nextRoles);
+
+    const nextSpecialty =
+      req.body?.specialty !== undefined
+        ? safeString(req.body.specialty, 120) || null
+        : existing.specialty != null
+          ? String(existing.specialty)
+          : null;
+    const notes =
+      req.body?.notes !== undefined
+        ? safeString(req.body.notes, 300)
+        : String(existing.approval_notes || '');
+
+    if (decision === 'aprovar') {
+      db.prepare(
+        `UPDATE users SET
+          role = ?, roles_json = ?, specialty = ?, active = 1, approval_status = 'aprovado',
+          approval_notes = ?, approved_by = ?, approved_at = datetime('now')
+         WHERE id = ?`
+      ).run(nextPrimaryRole, nextRolesJson, nextSpecialty, notes, req.authUser!.name, id);
+
+      logAudit({
+        userId: req.authUser!.id,
+        userName: req.authUser!.name,
+        userRole: req.authUser!.roles.join(', '),
+        action: 'APPROVE_USER',
+        entityType: 'users',
+        entityId: id,
+        details: `Primeiro acesso de ${existing.name} (${existing.email}) autorizado com categorias: ${nextRoles.join(', ')}.`,
+      });
+    } else {
+      db.prepare(
+        `UPDATE users SET
+          active = 0, approval_status = 'recusado',
+          approval_notes = ?, approved_by = ?, approved_at = datetime('now')
+         WHERE id = ?`
+      ).run(notes, req.authUser!.name, id);
+
+      logAudit({
+        userId: req.authUser!.id,
+        userName: req.authUser!.name,
+        userRole: req.authUser!.roles.join(', '),
+        action: 'REJECT_USER',
+        entityType: 'users',
+        entityId: id,
+        details: `Solicitação de primeiro acesso de ${existing.name} (${existing.email}) recusada.`,
+      });
+    }
+
+    res.json({ ok: true, roles: nextRoles });
   });
 
   app.patch('/api/users/:id', requireAuth, requireRole('admin'), (req: AuthRequest, res) => {
@@ -3375,10 +3604,17 @@ export function registerRoutes(app: Express): void {
       return;
     }
 
-    const role =
-      req.body?.role && VALID_ROLES.includes(req.body.role)
-        ? String(req.body.role)
-        : String(existing.role);
+    const submittedRoles = normalizeRolesInput(req.body?.roles, req.body?.role, true);
+    const existingRoles = parseUserRoles(existing.role as UserRole, existing.roles_json as string | null);
+    const hasExplicitRolesPayload = req.body?.roles !== undefined || req.body?.role !== undefined;
+    if (hasExplicitRolesPayload && submittedRoles.length === 0) {
+      res.status(400).json({ error: 'Selecione ao menos uma categoria válida para o usuário.' });
+      return;
+    }
+    const nextRoles = submittedRoles.length > 0 ? submittedRoles : existingRoles;
+    const primaryRole = nextRoles[0];
+    const rolesJson = JSON.stringify(nextRoles);
+
     const active =
       req.body?.active !== undefined ? (req.body.active ? 1 : 0) : Number(existing.active);
     const specialty =
@@ -3393,8 +3629,14 @@ export function registerRoutes(app: Express): void {
       return;
     }
 
-    db.prepare(`UPDATE users SET role = ?, active = ?, specialty = ? WHERE id = ?`).run(
-      role,
+    if (id === req.authUser!.id && !nextRoles.includes('admin')) {
+      res.status(400).json({ error: 'Você não pode remover a categoria Administrador da sua própria conta.' });
+      return;
+    }
+
+    db.prepare(`UPDATE users SET role = ?, roles_json = ?, active = ?, specialty = ? WHERE id = ?`).run(
+      primaryRole,
+      rolesJson,
       active,
       specialty,
       id
@@ -3410,14 +3652,14 @@ export function registerRoutes(app: Express): void {
     logAudit({
       userId: req.authUser!.id,
       userName: req.authUser!.name,
-      userRole: req.authUser!.role,
+      userRole: req.authUser!.roles.join(', '),
       action: 'ROLE_CHANGE',
       entityType: 'users',
       entityId: id,
-      details: `Permissões de ${existing.name} atualizadas (perfil: ${role}, ativo: ${active === 1}).`,
+      details: `Permissões de ${existing.name} atualizadas (categorias: ${nextRoles.join(', ')}, ativo: ${active === 1}).`,
     });
 
-    res.json({ ok: true });
+    res.json({ ok: true, roles: nextRoles });
   });
 
   app.get('/api/audit-logs', requireAuth, requireRole('admin', 'diretoria'), (_req, res) => {

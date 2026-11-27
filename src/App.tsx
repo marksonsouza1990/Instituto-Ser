@@ -37,7 +37,15 @@ import { DocumentGeneratorView } from './components/DocumentGeneratorView';
 import { ReportsView } from './components/ReportsView';
 import { AdminView } from './components/AdminView';
 import { CadastrosView } from './components/CadastrosView';
-import { FINANCE_ROLES, HEALTH_ROLES, ROLE_LABELS, type AuthUser, type UserRole } from './types';
+import {
+  FINANCE_ROLES,
+  HEALTH_ROLES,
+  formatUserRoles,
+  getUserRoles,
+  hasAnyRole,
+  type AuthUser,
+  type UserRole,
+} from './types';
 
 interface NavItem {
   id: string;
@@ -160,6 +168,10 @@ export default function App() {
   const [user, setUser] = useState<AuthUser | null>(null);
   const [activeTab, setActiveTab] = useState<string>('dashboard');
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [pendingApprovalsCount, setPendingApprovalsCount] = useState(0);
+
+  const userRoles = getUserRoles(user);
+  const isAdmin = userRoles.includes('admin');
 
   useEffect(() => {
     apiRequest<{ bootstrapped: boolean }>('/api/auth/status')
@@ -167,9 +179,29 @@ export default function App() {
       .catch(() => setBootstrapped(true));
   }, []);
 
+  useEffect(() => {
+    if (!user || !isAdmin) {
+      setPendingApprovalsCount(0);
+      return;
+    }
+    apiRequest<{ pendingCount: number }>('/api/users/pending-count')
+      .then((res) => setPendingApprovalsCount(res.pendingCount || 0))
+      .catch(() => setPendingApprovalsCount(0));
+  }, [user, isAdmin, activeTab]);
+
+  async function refreshCurrentUser() {
+    try {
+      const res = await apiRequest<{ user: AuthUser }>('/api/auth/me');
+      setUser(res.user);
+    } catch {
+      // ignore
+    }
+  }
+
   function handleLogout() {
     setSessionToken(null);
     setUser(null);
+    setPendingApprovalsCount(0);
     setActiveTab('dashboard');
   }
 
@@ -194,10 +226,11 @@ export default function App() {
     );
   }
 
-  const allowedNav = NAV_ITEMS.filter((item) => item.roles.includes(user.role));
+  const allowedNav = NAV_ITEMS.filter((item) => hasAnyRole(userRoles, item.roles));
   const groups = Array.from(new Set(allowedNav.map((i) => i.group)));
   const currentNavItem = allowedNav.find((i) => i.id === activeTab) || allowedNav[0];
   const currentTabId = currentNavItem ? currentNavItem.id : 'dashboard';
+  const roleLabelSummary = formatUserRoles(userRoles);
 
   function navigateTo(tabId: string) {
     if (allowedNav.some((n) => n.id === tabId)) {
@@ -271,7 +304,12 @@ export default function App() {
                           }`}
                         >
                           <Icon className={`w-4 h-4 shrink-0 ${active ? 'text-[#EBB428]' : 'text-[#556262]/70'}`} />
-                          <span className="truncate">{item.label}</span>
+                          <span className="truncate flex-1">{item.label}</span>
+                          {item.id === 'usuarios' && pendingApprovalsCount > 0 && (
+                            <span className="font-mono tabular-nums text-[10px] font-bold px-1.5 py-0.5 rounded bg-[#BD4B22] text-white shrink-0">
+                              {pendingApprovalsCount}
+                            </span>
+                          )}
                         </button>
                       </li>
                     );
@@ -283,7 +321,9 @@ export default function App() {
 
         <div className="p-4 border-t border-[#E5E1D8] bg-[#F7F5F0]/60 text-xs text-[#556262]">
           <div className="font-semibold text-[#182424] truncate">{user.name}</div>
-          <div className="text-[11px] text-[#0E5A75] font-medium truncate">{ROLE_LABELS[user.role]}</div>
+          <div className="text-[11px] text-[#0E5A75] font-medium leading-snug mt-0.5" title={roleLabelSummary}>
+            {roleLabelSummary}
+          </div>
         </div>
       </aside>
 
@@ -308,10 +348,10 @@ export default function App() {
           </div>
 
           <div className="flex items-center gap-4 shrink-0">
-            <div className="hidden sm:block text-xs text-[#556262] whitespace-nowrap">
+            <div className="hidden sm:block text-xs text-[#556262] whitespace-nowrap max-w-[380px] truncate" title={roleLabelSummary}>
               <span className="text-[#182424]">{user.name}</span>
               <span className="mx-1.5 text-[#E5E1D8]">·</span>
-              <span className="text-[#144A47] font-medium">{ROLE_LABELS[user.role]}</span>
+              <span className="text-[#144A47] font-medium">{roleLabelSummary}</span>
             </div>
             <button
               type="button"
@@ -326,23 +366,46 @@ export default function App() {
 
         {/* Active Module Viewport */}
         <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1400px] w-full mx-auto">
-          {currentTabId === 'dashboard' && (
-            <DashboardView role={user.role} onNavigate={navigateTo} />
+          {isAdmin && pendingApprovalsCount > 0 && currentTabId !== 'usuarios' && (
+            <div className="mb-5 px-4 py-2.5 rounded-xl bg-[#EBB428]/15 border border-[#EBB428]/50 flex flex-wrap items-center justify-between gap-3 text-xs text-[#182424]">
+              <span>
+                Há <strong className="font-mono tabular-nums">{pendingApprovalsCount}</strong>{' '}
+                {pendingApprovalsCount === 1
+                  ? 'solicitação de primeiro acesso aguardando sua autorização.'
+                  : 'solicitações de primeiro acesso aguardando sua autorização.'}
+              </span>
+              <button
+                type="button"
+                onClick={() => navigateTo('usuarios')}
+                className="px-3 py-1 rounded-lg bg-[#144A47] text-white font-medium hover:bg-[#0E3735] cursor-pointer whitespace-nowrap"
+              >
+                Revisar e Autorizar
+              </button>
+            </div>
           )}
-          {currentTabId === 'agenda' && <AgendaView role={user.role} />}
-          {currentTabId === 'alunos' && <StudentsView role={user.role} />}
-          {currentTabId === 'saude' && <HealthView role={user.role} />}
-          {currentTabId === 'frequencia' && <AttendanceView role={user.role} />}
-          {currentTabId === 'projetos' && <ProjectsView role={user.role} />}
-          {currentTabId === 'voluntarios' && <VolunteersView role={user.role} />}
-          {currentTabId === 'doadores' && <DonorsView role={user.role} />}
-          {currentTabId === 'financeiro' && <FinanceView role={user.role} />}
-          {currentTabId === 'fornecedores' && <SuppliersView role={user.role} />}
-          {currentTabId === 'documentos' && <DocumentsView role={user.role} />}
-          {currentTabId === 'gerar_documentos' && <DocumentGeneratorView role={user.role} />}
-          {currentTabId === 'relatorios' && <ReportsView role={user.role} />}
-          {currentTabId === 'cadastros' && <CadastrosView role={user.role} />}
-          {currentTabId === 'usuarios' && <AdminView currentUser={user} />}
+          {currentTabId === 'dashboard' && (
+            <DashboardView role={userRoles} onNavigate={navigateTo} />
+          )}
+          {currentTabId === 'agenda' && <AgendaView role={userRoles} />}
+          {currentTabId === 'alunos' && <StudentsView role={userRoles} />}
+          {currentTabId === 'saude' && <HealthView role={userRoles} />}
+          {currentTabId === 'frequencia' && <AttendanceView role={userRoles} />}
+          {currentTabId === 'projetos' && <ProjectsView role={userRoles} />}
+          {currentTabId === 'voluntarios' && <VolunteersView role={userRoles} />}
+          {currentTabId === 'doadores' && <DonorsView role={userRoles} />}
+          {currentTabId === 'financeiro' && <FinanceView role={userRoles} />}
+          {currentTabId === 'fornecedores' && <SuppliersView role={userRoles} />}
+          {currentTabId === 'documentos' && <DocumentsView role={userRoles} />}
+          {currentTabId === 'gerar_documentos' && <DocumentGeneratorView role={userRoles} />}
+          {currentTabId === 'relatorios' && <ReportsView role={userRoles} />}
+          {currentTabId === 'cadastros' && <CadastrosView role={userRoles} />}
+          {currentTabId === 'usuarios' && (
+            <AdminView
+              currentUser={user}
+              onPendingCountChange={(cnt) => setPendingApprovalsCount(cnt)}
+              onCurrentUserUpdated={refreshCurrentUser}
+            />
+          )}
         </main>
       </div>
     </div>

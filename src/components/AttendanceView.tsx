@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, Check } from 'lucide-react';
 import { apiRequest } from '../lib/api';
-import type { AttendanceClass, UserRole } from '../types';
+import { hasAnyRole, type AttendanceClass, type RoleInput } from '../types';
 
 interface RosterRow {
   id: number;
@@ -13,7 +13,7 @@ interface RosterRow {
   monthly_rate: number | null;
 }
 
-export function AttendanceView({ role }: { role: UserRole }) {
+export function AttendanceView({ role }: { role: RoleInput }) {
   const [classes, setClasses] = useState<AttendanceClass[]>([]);
   const [selectedClassId, setSelectedClassId] = useState<number | null>(null);
   const [date, setDate] = useState('2026-11-23');
@@ -23,7 +23,7 @@ export function AttendanceView({ role }: { role: UserRole }) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const canRecord = ['admin', 'coordenacao_social', 'professor', 'voluntario'].includes(role);
+  const canRecord = hasAnyRole(role, ['admin', 'coordenacao_social', 'professor', 'voluntario']);
 
   useEffect(() => {
     apiRequest<AttendanceClass[]>('/api/attendance/classes')

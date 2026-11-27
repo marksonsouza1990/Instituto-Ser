@@ -4,13 +4,14 @@ import { apiRequest } from '../lib/api';
 import { formatBRL, formatDateBR } from '../lib/format';
 import {
   HEALTH_ROLES,
+  hasAnyRole,
   type Appointment,
   type Family,
   type InstitutionalDocument,
+  type RoleInput,
   type Student,
   type StudentEvolution,
   type StudentStatus,
-  type UserRole,
 } from '../types';
 
 const PROGRAMS_LIST = [
@@ -37,7 +38,7 @@ interface StudentDetailPayload {
   appointments: Appointment[];
 }
 
-export function StudentsView({ role }: { role: UserRole }) {
+export function StudentsView({ role }: { role: RoleInput }) {
   const [subTab, setSubTab] = useState<'alunos' | 'familias'>('alunos');
   const [students, setStudents] = useState<Student[]>([]);
   const [families, setFamilies] = useState<Family[]>([]);
@@ -55,9 +56,9 @@ export function StudentsView({ role }: { role: UserRole }) {
   const [editingStudent, setEditingStudent] = useState<Student | null>(null);
   const [showFamilyModal, setShowFamilyModal] = useState(false);
 
-  const canWrite = ['admin', 'coordenacao_social', 'professor'].includes(role);
-  const canWriteFamily = ['admin', 'coordenacao_social'].includes(role);
-  const canSeeHealth = HEALTH_ROLES.includes(role);
+  const canWrite = hasAnyRole(role, ['admin', 'coordenacao_social', 'professor']);
+  const canWriteFamily = hasAnyRole(role, ['admin', 'coordenacao_social']);
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
 
   // Student form state
   const [sForm, setSForm] = useState({

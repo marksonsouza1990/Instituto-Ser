@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Lock, Plus } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { formatBRL } from '../lib/format';
-import type { Supplier, UserRole } from '../types';
+import { FINANCE_ROLES, hasAnyRole, type RoleInput, type Supplier } from '../types';
 
-export function SuppliersView({ role }: { role: UserRole }) {
+export function SuppliersView({ role }: { role: RoleInput }) {
   const [suppliers, setSuppliers] = useState<Supplier[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -23,7 +23,7 @@ export function SuppliersView({ role }: { role: UserRole }) {
     status: 'ativo',
   });
 
-  const canWrite = role === 'admin' || role === 'financeiro';
+  const canWrite = hasAnyRole(role, FINANCE_ROLES);
 
   async function loadSuppliers() {
     setLoading(true);

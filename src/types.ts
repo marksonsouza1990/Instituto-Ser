@@ -24,13 +24,51 @@ export const ROLE_LABELS: Record<UserRole, string> = {
 export const FINANCE_ROLES: UserRole[] = ['admin', 'financeiro'];
 export const HEALTH_ROLES: UserRole[] = ['admin', 'saude', 'psicologo', 'medico'];
 
+export type RoleInput =
+  | UserRole
+  | readonly UserRole[]
+  | { role: UserRole; roles?: readonly UserRole[] }
+  | null
+  | undefined;
+
+export function getUserRoles(input: RoleInput): UserRole[] {
+  if (!input) return [];
+  if (typeof input === 'string') return [input];
+  if (Array.isArray(input)) {
+    return Array.from(new Set(input));
+  }
+  const obj = input as { role: UserRole; roles?: readonly UserRole[] };
+  if (obj.roles && obj.roles.length > 0) {
+    return Array.from(new Set(obj.roles));
+  }
+  return obj.role ? [obj.role] : [];
+}
+
+export function hasAnyRole(input: RoleInput, allowedRoles: readonly UserRole[]): boolean {
+  const userRoles = getUserRoles(input);
+  return userRoles.some((r) => allowedRoles.includes(r));
+}
+
+export function formatUserRoles(input: RoleInput): string {
+  const userRoles = getUserRoles(input);
+  if (userRoles.length === 0) return '';
+  return userRoles.map((r) => ROLE_LABELS[r] || r).join(' · ');
+}
+
 export interface AuthUser {
   id: number;
   name: string;
   email: string;
   role: UserRole;
+  roles?: UserRole[];
+  requested_role?: UserRole | null;
+  requested_roles?: UserRole[];
   specialty?: string | null;
   active: boolean;
+  approval_status?: 'pendente' | 'aprovado' | 'recusado';
+  approval_notes?: string;
+  approved_by?: string | null;
+  approved_at?: string | null;
   created_at: string;
   last_login_at?: string | null;
 }

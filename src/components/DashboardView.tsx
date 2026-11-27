@@ -11,7 +11,7 @@ import {
 import { apiRequest } from '../lib/api';
 import { formatBRL, formatDateBR, formatDateTimeBR } from '../lib/format';
 import { DonutChart, GroupedBarChart, HorizontalBarChart, LineAreaChart } from './Charts';
-import { FINANCE_ROLES, HEALTH_ROLES, type DashboardData, type DashboardPeriod, type UserRole } from '../types';
+import { FINANCE_ROLES, HEALTH_ROLES, hasAnyRole, type DashboardData, type DashboardPeriod, type RoleInput } from '../types';
 
 const PERIODS: { id: DashboardPeriod; label: string }[] = [
   { id: 'semanal', label: 'Semanal' },
@@ -25,7 +25,7 @@ export function DashboardView({
   role,
   onNavigate,
 }: {
-  role: UserRole;
+  role: RoleInput;
   onNavigate: (tab: string) => void;
 }) {
   const [period, setPeriod] = useState<DashboardPeriod>('mensal');
@@ -33,8 +33,8 @@ export function DashboardView({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const canSeeFinance = FINANCE_ROLES.includes(role);
-  const canSeeHealth = HEALTH_ROLES.includes(role);
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
 
   useEffect(() => {
     let active = true;

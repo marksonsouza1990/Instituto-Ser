@@ -2,7 +2,7 @@ import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react';
 import { Download, FileText, Plus, Upload } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { formatDateBR } from '../lib/format';
-import { FINANCE_ROLES, HEALTH_ROLES, type InstitutionalDocument, type Project, type Student, type UserRole } from '../types';
+import { FINANCE_ROLES, HEALTH_ROLES, hasAnyRole, type InstitutionalDocument, type Project, type RoleInput, type Student } from '../types';
 
 const DOC_CATEGORIES = [
   'Documento do Aluno',
@@ -16,7 +16,7 @@ const DOC_CATEGORIES = [
   'Documento Jurídico',
 ];
 
-export function DocumentsView({ role }: { role: UserRole }) {
+export function DocumentsView({ role }: { role: RoleInput }) {
   const [docs, setDocs] = useState<InstitutionalDocument[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [students, setStudents] = useState<Student[]>([]);
@@ -146,10 +146,10 @@ export function DocumentsView({ role }: { role: UserRole }) {
     return cOk && pOk;
   });
 
-  const canUpload = role !== 'voluntario';
-  const canSeeFinance = FINANCE_ROLES.includes(role);
-  const canSeeHealth = HEALTH_ROLES.includes(role);
-  const canSeeDiretoria = ['admin', 'diretoria'].includes(role);
+  const canUpload = hasAnyRole(role, ['admin', 'diretoria', 'financeiro', 'coordenacao_social', 'saude', 'psicologo', 'medico', 'professor']);
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
+  const canSeeDiretoria = hasAnyRole(role, ['admin', 'diretoria']);
 
   return (
     <div className="space-y-6">

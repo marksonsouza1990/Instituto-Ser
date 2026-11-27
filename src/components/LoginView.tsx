@@ -1,8 +1,8 @@
 import { useState, type FormEvent } from 'react';
-import { Eye, EyeOff, Lock, Mail, ShieldCheck, User } from 'lucide-react';
+import { Eye, EyeOff, Lock, Mail, ShieldCheck, User, UserPlus } from 'lucide-react';
 import { apiRequest, setSessionToken } from '../lib/api';
 import { BrandLogo, BrandStrip, OfficialLogoImage } from './BrandLogo';
-import type { AuthUser } from '../types';
+import { ROLE_LABELS, type AuthUser, type UserRole } from '../types';
 
 interface LoginViewProps {
   bootstrapped: boolean;
@@ -32,16 +32,40 @@ const BRAND_PILLARS = [
   },
 ];
 
+const REQUESTABLE_ROLES: UserRole[] = [
+  'voluntario',
+  'professor',
+  'psicologo',
+  'medico',
+  'saude',
+  'coordenacao_social',
+  'financeiro',
+  'diretoria',
+];
+
 export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
-  const [mode, setMode] = useState<'login' | 'bootstrap' | 'forgot' | 'reset'>(
+  const [mode, setMode] = useState<'login' | 'bootstrap' | 'request' | 'forgot' | 'reset'>(
     bootstrapped ? 'login' : 'bootstrap'
   );
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
+  const [requestedRoles, setRequestedRoles] = useState<UserRole[]>(['voluntario']);
+  const [specialty, setSpecialty] = useState('');
+  const [approvalNotes, setApprovalNotes] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [resetCode, setResetCode] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+
+  function toggleRequestedRole(roleKey: UserRole) {
+    setRequestedRoles((prev) => {
+      if (prev.includes(roleKey)) {
+        if (prev.length === 1) return prev; // manter ao menos 1 categoria
+        return prev.filter((r) => r !== roleKey);
+      }
+      return [...prev, roleKey];
+    });
+  }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
@@ -69,6 +93,40 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
         onAuthenticated(res.user);
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Falha ao configurar administrador.');
+      } finally {
+        setLoading(false);
+      }
+      return;
+    }
+
+    if (mode === 'request') {
+      if (password !== confirmPassword) {
+        setError('As senhas informadas não coincidem.');
+        return;
+      }
+      setLoading(true);
+      try {
+        const res = await apiRequest<{ message: string }>('/api/auth/request-access', {
+          method: 'POST',
+          body: JSON.stringify({
+            name,
+            email,
+            requested_role: requestedRoles[0] || 'voluntario',
+            requested_roles: requestedRoles,
+            specialty,
+            approval_notes: approvalNotes,
+            password,
+          }),
+        });
+        setInfoMessage(res.message);
+        setPassword('');
+        setConfirmPassword('');
+        setApprovalNotes('');
+        setSpecialty('');
+        setRequestedRoles(['voluntario']);
+        setMode('login');
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Falha ao enviar solicitação de acesso.');
       } finally {
         setLoading(false);
       }
@@ -198,20 +256,24 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
               <h2 className="font-display text-2xl font-bold text-[#182424]">
                 {mode === 'bootstrap'
                   ? 'Configuração Inicial do Administrador'
-                  : mode === 'login'
-                    ? 'Acessar Plataforma'
-                    : mode === 'forgot'
-                      ? 'Recuperar Acesso'
-                      : 'Redefinir Senha'}
+                  : mode === 'request'
+                    ? 'Solicitar Primeiro Acesso'
+                    : mode === 'login'
+                      ? 'Acessar Plataforma'
+                      : mode === 'forgot'
+                        ? 'Recuperar Acesso'
+                        : 'Redefinir Senha'}
               </h2>
               <p className="text-sm text-[#556262] mt-1.5">
                 {mode === 'bootstrap'
                   ? 'Defina o primeiro acesso administrativo para liberar os módulos do Instituto SER.'
-                  : mode === 'login'
-                    ? 'Entre com suas credenciais institucionais para acessar os módulos autorizados.'
-                    : mode === 'forgot'
-                      ? 'Informe seu e-mail para registrar uma solicitação de recuperação junto à administração.'
-                      : 'Informe o e-mail, o código fornecido e sua nova senha.'}
+                  : mode === 'request'
+                    ? 'Preencha seus dados. O acesso será liberado somente após autorização do administrador.'
+                    : mode === 'login'
+                      ? 'Entre com suas credenciais institucionais para acessar os módulos autorizados.'
+                      : mode === 'forgot'
+                        ? 'Informe seu e-mail para registrar uma solicitação de recuperação junto à administração.'
+                        : 'Informe o e-mail, o código fornecido e sua nova senha.'}
               </p>
             </div>
 
@@ -231,10 +293,10 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
             )}
 
             <form onSubmit={handleSubmit} className="space-y-4">
-              {mode === 'bootstrap' && (
+              {(mode === 'bootstrap' || mode === 'request') && (
                 <div>
                   <label className="block text-xs font-medium text-[#182424] mb-1.5">
-                    Nome completo do Administrador
+                    {mode === 'bootstrap' ? 'Nome completo do Administrador' : 'Nome completo *'}
                   </label>
                   <div className="relative">
                     <User className="w-4 h-4 text-[#556262] absolute left-3 top-1/2 -translate-y-1/2" />
@@ -243,7 +305,7 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
                       required
                       value={name}
                       onChange={(e) => setName(e.target.value)}
-                      placeholder="Ex.: Coordenação Executiva"
+                      placeholder={mode === 'bootstrap' ? 'Ex.: Coordenação Executiva' : 'Seu nome completo'}
                       className="w-full pl-9 pr-3 py-2.5 text-sm border border-[#E5E1D8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#144A47]/20 focus:border-[#144A47]"
                     />
                   </div>
@@ -283,10 +345,78 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
                 </div>
               )}
 
-              {(mode === 'login' || mode === 'bootstrap' || mode === 'reset') && (
+              {mode === 'request' && (
+                <>
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label className="block text-xs font-medium text-[#182424]">
+                        Categorias / Áreas solicitadas *
+                      </label>
+                      <span className="text-[11px] text-[#556262]">
+                        Marque 1 ou mais (ex.: Médico + Diretoria)
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-2 gap-2">
+                      {REQUESTABLE_ROLES.map((rk) => {
+                        const checked = requestedRoles.includes(rk);
+                        return (
+                          <label
+                            key={rk}
+                            className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border text-xs cursor-pointer transition-colors ${
+                              checked
+                                ? 'bg-[#144A47]/8 border-[#144A47] text-[#144A47] font-medium'
+                                : 'bg-white border-[#E5E1D8] text-[#182424] hover:bg-[#F7F5F0]'
+                            }`}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleRequestedRole(rk)}
+                              className="accent-[#144A47] shrink-0"
+                            />
+                            <span className="truncate">{ROLE_LABELS[rk]}</span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-[#182424] mb-1.5">
+                        Especialidade / Registro
+                      </label>
+                      <input
+                        type="text"
+                        value={specialty}
+                        onChange={(e) => setSpecialty(e.target.value)}
+                        placeholder="Ex.: CRP, CRM, Pedagogia"
+                        className="w-full px-3 py-2 text-sm border border-[#E5E1D8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#144A47]/20 focus:border-[#144A47]"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-[#182424] mb-1.5">
+                        Observação p/ Administrador
+                      </label>
+                      <input
+                        type="text"
+                        value={approvalNotes}
+                        onChange={(e) => setApprovalNotes(e.target.value)}
+                        placeholder="Ex.: Equipe de voluntariado"
+                        className="w-full px-3 py-2 text-sm border border-[#E5E1D8] rounded-lg focus:outline-none focus:ring-2 focus:ring-[#144A47]/20 focus:border-[#144A47]"
+                      />
+                    </div>
+                  </div>
+                </>
+              )}
+
+              {(mode === 'login' || mode === 'bootstrap' || mode === 'request' || mode === 'reset') && (
                 <div>
                   <label className="block text-xs font-medium text-[#182424] mb-1.5">
-                    {mode === 'reset' ? 'Nova senha (mín. 6 caracteres)' : 'Senha de acesso'}
+                    {mode === 'reset'
+                      ? 'Nova senha (mín. 6 caracteres)'
+                      : mode === 'request'
+                        ? 'Definir senha (mín. 6 caracteres) *'
+                        : 'Senha de acesso'}
                   </label>
                   <div className="relative">
                     <Lock className="w-4 h-4 text-[#556262] absolute left-3 top-1/2 -translate-y-1/2" />
@@ -311,10 +441,10 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
                 </div>
               )}
 
-              {mode === 'bootstrap' && (
+              {(mode === 'bootstrap' || mode === 'request') && (
                 <div>
                   <label className="block text-xs font-medium text-[#182424] mb-1.5">
-                    Confirmar senha
+                    Confirmar senha *
                   </label>
                   <input
                     type={showPassword ? 'text' : 'password'}
@@ -337,17 +467,31 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
                   ? 'Processando...'
                   : mode === 'bootstrap'
                     ? 'Criar Conta Administrativa e Entrar'
-                    : mode === 'login'
-                      ? 'Entrar no Sistema'
-                      : mode === 'forgot'
-                        ? 'Solicitar Recuperação'
-                        : 'Salvar Nova Senha'}
+                    : mode === 'request'
+                      ? 'Enviar Solicitação para Autorização'
+                      : mode === 'login'
+                        ? 'Entrar no Sistema'
+                        : mode === 'forgot'
+                          ? 'Solicitar Recuperação'
+                          : 'Salvar Nova Senha'}
               </button>
             </form>
 
             <div className="mt-5 pt-5 border-t border-[#E5E1D8] flex flex-wrap items-center justify-between gap-2 text-xs text-[#556262]">
               {mode === 'login' && (
                 <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setError(null);
+                      setInfoMessage(null);
+                      setMode('request');
+                    }}
+                    className="inline-flex items-center gap-1.5 text-[#144A47] hover:underline font-semibold cursor-pointer"
+                  >
+                    <UserPlus className="w-3.5 h-3.5" />
+                    Primeiro acesso? Solicitar autorização
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -371,13 +515,19 @@ export function LoginView({ bootstrapped, onAuthenticated }: LoginViewProps) {
                 </>
               )}
 
-              {mode === 'bootstrap' && (
+              {(mode === 'bootstrap' || mode === 'request') && (
                 <button
                   type="button"
-                  onClick={() => setMode('login')}
+                  onClick={() => {
+                    setError(null);
+                    setInfoMessage(null);
+                    setMode('login');
+                  }}
                   className="text-[#0E5A75] hover:underline font-medium cursor-pointer"
                 >
-                  Já possuo conta / Usar código administrativo
+                  {mode === 'bootstrap'
+                    ? 'Já possuo conta / Usar código administrativo'
+                    : 'Já fui autorizado(a) · Voltar ao login'}
                 </button>
               )}
 

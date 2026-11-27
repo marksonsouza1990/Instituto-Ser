@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { formatBRL, formatDateBR } from '../lib/format';
-import { FINANCE_ROLES, type Donor, type UserRole } from '../types';
+import { FINANCE_ROLES, hasAnyRole, type Donor, type RoleInput } from '../types';
 
-export function DonorsView({ role }: { role: UserRole }) {
+export function DonorsView({ role }: { role: RoleInput }) {
   const [donors, setDonors] = useState<Donor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -22,8 +22,8 @@ export function DonorsView({ role }: { role: UserRole }) {
     notes: '',
   });
 
-  const canWrite = ['admin', 'financeiro', 'diretoria', 'coordenacao_social'].includes(role);
-  const canSeeFinance = FINANCE_ROLES.includes(role);
+  const canWrite = hasAnyRole(role, ['admin', 'financeiro', 'diretoria', 'coordenacao_social']);
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
 
   async function loadDonors() {
     setLoading(true);

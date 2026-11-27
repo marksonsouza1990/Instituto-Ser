@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Plus } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { formatBRL, formatDateBR } from '../lib/format';
-import { FINANCE_ROLES, type Project, type UserRole } from '../types';
+import { FINANCE_ROLES, hasAnyRole, type Project, type RoleInput } from '../types';
 
-export function ProjectsView({ role }: { role: UserRole }) {
+export function ProjectsView({ role }: { role: RoleInput }) {
   const [projects, setProjects] = useState<Project[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -25,8 +25,8 @@ export function ProjectsView({ role }: { role: UserRole }) {
     status: 'Ativo',
   });
 
-  const canWrite = ['admin', 'diretoria', 'coordenacao_social'].includes(role);
-  const canSeeFinance = FINANCE_ROLES.includes(role);
+  const canWrite = hasAnyRole(role, ['admin', 'diretoria', 'coordenacao_social']);
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
 
   async function loadProjects() {
     setLoading(true);

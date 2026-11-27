@@ -2,9 +2,9 @@ import { useEffect, useState, type FormEvent } from 'react';
 import { Clock, Plus } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { formatDateBR } from '../lib/format';
-import type { Project, UserRole, Volunteer, VolunteerHour } from '../types';
+import { hasAnyRole, type Project, type RoleInput, type Volunteer, type VolunteerHour } from '../types';
 
-export function VolunteersView({ role }: { role: UserRole }) {
+export function VolunteersView({ role }: { role: RoleInput }) {
   const [subTab, setSubTab] = useState<'equipe' | 'horas'>('equipe');
   const [volunteers, setVolunteers] = useState<Volunteer[]>([]);
   const [hoursLog, setHoursLog] = useState<VolunteerHour[]>([]);
@@ -35,7 +35,7 @@ export function VolunteersView({ role }: { role: UserRole }) {
     activity_description: '',
   });
 
-  const canManageTeam = ['admin', 'coordenacao_social', 'diretoria'].includes(role);
+  const canManageTeam = hasAnyRole(role, ['admin', 'coordenacao_social', 'diretoria']);
 
   async function loadAll() {
     try {

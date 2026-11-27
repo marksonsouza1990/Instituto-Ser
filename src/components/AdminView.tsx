@@ -1,28 +1,71 @@
 import { useEffect, useState, type FormEvent } from 'react';
-import { Database, Plus, Shield } from 'lucide-react';
+import { Check, Clock, Database, Edit3, Plus, Shield, XCircle } from 'lucide-react';
 import { apiRequest, getSessionToken } from '../lib/api';
 import { formatDateTimeBR } from '../lib/format';
-import { ROLE_LABELS, type AuditLog, type AuthUser, type UserRole } from '../types';
+import {
+  ROLE_LABELS,
+  formatUserRoles,
+  getUserRoles,
+  hasAnyRole,
+  type AuditLog,
+  type AuthUser,
+  type UserRole,
+} from '../types';
 
-export function AdminView({ currentUser }: { currentUser: AuthUser }) {
-  const [subTab, setSubTab] = useState<'usuarios' | 'auditoria'>('usuarios');
+const ALL_ROLE_KEYS = Object.keys(ROLE_LABELS) as UserRole[];
+
+function getRequestedRolesList(u: AuthUser): UserRole[] {
+  if (u.requested_roles && u.requested_roles.length > 0) return u.requested_roles;
+  if (u.requested_role) return [u.requested_role];
+  return getUserRoles(u);
+}
+
+function toggleRoleInList(list: UserRole[], roleKey: UserRole, lockAdmin = false): UserRole[] {
+  if (lockAdmin && roleKey === 'admin' && list.includes('admin')) {
+    return list;
+  }
+  if (list.includes(roleKey)) {
+    if (list.length === 1) return list;
+    return list.filter((r) => r !== roleKey);
+  }
+  return [...list, roleKey];
+}
+
+export function AdminView({
+  currentUser,
+  onPendingCountChange,
+  onCurrentUserUpdated,
+}: {
+  currentUser: AuthUser;
+  onPendingCountChange?: (count: number) => void;
+  onCurrentUserUpdated?: () => void;
+}) {
+  const [subTab, setSubTab] = useState<'pendentes' | 'usuarios' | 'auditoria'>('usuarios');
   const [users, setUsers] = useState<AuthUser[]>([]);
   const [logs, setLogs] = useState<AuditLog[]>([]);
   const [onlyLgpd, setOnlyLgpd] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [feedback, setFeedback] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
+  const [roleDrafts, setRoleDrafts] = useState<Record<number, UserRole[]>>({});
+  const [processingId, setProcessingId] = useState<number | null>(null);
+
+  const [editingUser, setEditingUser] = useState<AuthUser | null>(null);
+  const [editRoles, setEditRoles] = useState<UserRole[]>(['voluntario']);
+  const [editSpecialty, setEditSpecialty] = useState('');
+  const [savingEdit, setSavingEdit] = useState(false);
 
   const [form, setForm] = useState({
     name: '',
     email: '',
-    role: 'coordenacao_social' as UserRole,
+    roles: ['coordenacao_social'] as UserRole[],
     specialty: '',
     password: '',
   });
 
-  const isAdmin = currentUser.role === 'admin';
+  const isAdmin = hasAnyRole(currentUser, ['admin']);
 
-  async function loadAll() {
+  async function loadAll(autoFocusPending = false) {
     setError(null);
     try {
       const logsRes = await apiRequest<AuditLog[]>('/api/audit-logs');
@@ -30,6 +73,20 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
       if (isAdmin) {
         const usersRes = await apiRequest<AuthUser[]>('/api/users');
         setUsers(usersRes);
+        const pending = usersRes.filter((u) => u.approval_status === 'pendente');
+        onPendingCountChange?.(pending.length);
+        setRoleDrafts((prev) => {
+          const next = { ...prev };
+          for (const u of pending) {
+            if (!next[u.id] || next[u.id].length === 0) {
+              next[u.id] = getRequestedRolesList(u);
+            }
+          }
+          return next;
+        });
+        if (autoFocusPending && pending.length > 0) {
+          setSubTab('pendentes');
+        }
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao carregar governança.');
@@ -37,22 +94,60 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
   }
 
   useEffect(() => {
-    loadAll();
+    void loadAll(true);
   }, []);
 
   async function handleCreateUser(e: FormEvent) {
     e.preventDefault();
     setError(null);
+    setFeedback(null);
     try {
       await apiRequest('/api/users', {
         method: 'POST',
-        body: JSON.stringify(form),
+        body: JSON.stringify({
+          name: form.name,
+          email: form.email,
+          role: form.roles[0],
+          roles: form.roles,
+          specialty: form.specialty,
+          password: form.password,
+        }),
       });
       setShowModal(false);
-      setForm({ name: '', email: '', role: 'coordenacao_social', specialty: '', password: '' });
+      setForm({ name: '', email: '', roles: ['coordenacao_social'], specialty: '', password: '' });
+      setFeedback('Usuário criado e autorizado com sucesso.');
       await loadAll();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Erro ao criar usuário.');
+    }
+  }
+
+  async function handleDecision(u: AuthUser, decision: 'aprovar' | 'recusar') {
+    setError(null);
+    setFeedback(null);
+    setProcessingId(u.id);
+    try {
+      const assignedRoles = roleDrafts[u.id] && roleDrafts[u.id].length > 0
+        ? roleDrafts[u.id]
+        : getRequestedRolesList(u);
+      await apiRequest(`/api/users/${u.id}/decision`, {
+        method: 'POST',
+        body: JSON.stringify({
+          decision,
+          role: assignedRoles[0],
+          roles: assignedRoles,
+        }),
+      });
+      setFeedback(
+        decision === 'aprovar'
+          ? `Acesso de ${u.name} autorizado nas categorias: ${formatUserRoles(assignedRoles)}.`
+          : `Solicitação de ${u.name} recusada.`
+      );
+      await loadAll();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Erro ao processar decisão.');
+    } finally {
+      setProcessingId(null);
     }
   }
 
@@ -68,15 +163,41 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
     }
   }
 
-  async function changeUserRole(u: AuthUser, newRole: UserRole) {
+  function openEditCategories(u: AuthUser) {
+    setEditingUser(u);
+    setEditRoles(getUserRoles(u));
+    setEditSpecialty(u.specialty || '');
+    setError(null);
+  }
+
+  async function handleSaveCategories(e: FormEvent) {
+    e.preventDefault();
+    if (!editingUser) return;
+    setSavingEdit(true);
+    setError(null);
+    setFeedback(null);
     try {
-      await apiRequest(`/api/users/${u.id}`, {
+      await apiRequest(`/api/users/${editingUser.id}`, {
         method: 'PATCH',
-        body: JSON.stringify({ role: newRole }),
+        body: JSON.stringify({
+          role: editRoles[0],
+          roles: editRoles,
+          specialty: editSpecialty,
+        }),
       });
+      setFeedback(
+        `Categorias de ${editingUser.name} atualizadas: ${formatUserRoles(editRoles)}.`
+      );
+      const updatedSelf = editingUser.id === currentUser.id;
+      setEditingUser(null);
       await loadAll();
+      if (updatedSelf) {
+        onCurrentUserUpdated?.();
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Erro ao atualizar perfil.');
+      setError(err instanceof Error ? err.message : 'Erro ao atualizar categorias.');
+    } finally {
+      setSavingEdit(false);
     }
   }
 
@@ -101,39 +222,55 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
     }
   }
 
+  const pendingUsers = users.filter((u) => u.approval_status === 'pendente');
   const displayedLogs = onlyLgpd
     ? logs.filter((l) => l.action === 'ACCESS_MEDICAL_RECORD' || l.entity_type === 'medical_records')
     : logs;
+
+  const hasHealthInCreate = form.roles.some((r) => r === 'saude' || r === 'psicologo' || r === 'medico');
+  const hasHealthInEdit = editRoles.some((r) => r === 'saude' || r === 'psicologo' || r === 'medico');
 
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <h1 className="font-display text-2xl font-bold text-slate-900">
-            Usuários, Permissões e Auditoria (LGPD)
+            Usuários, Autorizações e Auditoria (LGPD)
           </h1>
           <p className="text-sm text-slate-500 mt-0.5">
-            Controle de acesso por função (financeiro, psicólogos, médicos e coordenação), trilha de auditoria e backup institucional.
+            Autorização obrigatória de primeiro acesso, múltiplas categorias por pessoa (RBAC), auditoria e backup institucional.
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-3">
           <div className="flex items-center gap-1 p-1 bg-[#EFECE4] border border-[#E5E1D8] rounded-lg">
             {isAdmin && (
-              <button
-                type="button"
-                onClick={() => setSubTab('usuarios')}
-                className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
-                  subTab === 'usuarios' ? 'bg-white text-[#144A47] shadow-xs' : 'text-slate-600'
-                }`}
-              >
-                Usuários ({users.length})
-              </button>
+              <>
+                <button
+                  type="button"
+                  onClick={() => setSubTab('pendentes')}
+                  className={`inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
+                    subTab === 'pendentes' ? 'bg-white text-[#144A47] shadow-xs' : 'text-slate-600'
+                  }`}
+                >
+                  <Clock className="w-3.5 h-3.5 text-[#BD4B22]" />
+                  Autorizações ({pendingUsers.length})
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSubTab('usuarios')}
+                  className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
+                    subTab === 'usuarios' ? 'bg-white text-[#144A47] shadow-xs' : 'text-slate-600'
+                  }`}
+                >
+                  Usuários ({users.length})
+                </button>
+              </>
             )}
             <button
               type="button"
               onClick={() => setSubTab('auditoria')}
-              className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer ${
+              className={`px-3 py-1.5 text-xs font-medium rounded-md cursor-pointer whitespace-nowrap ${
                 subTab === 'auditoria' || !isAdmin ? 'bg-white text-[#144A47] shadow-xs' : 'text-slate-600'
               }`}
             >
@@ -167,64 +304,213 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
       {error && (
         <div className="p-3 rounded-lg bg-red-50 border border-red-200 text-xs text-red-800">{error}</div>
       )}
+      {feedback && (
+        <div className="p-3 rounded-lg bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+          {feedback}
+        </div>
+      )}
 
-      {subTab === 'usuarios' && isAdmin ? (
+      {subTab === 'pendentes' && isAdmin ? (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+          <div className="p-4 border-b border-slate-200 flex items-center justify-between">
+            <div>
+              <h2 className="font-display text-sm font-semibold text-slate-900">
+                Solicitações de Primeiro Acesso Aguardando Autorização
+              </h2>
+              <p className="text-xs text-slate-500 mt-0.5">
+                Selecione uma ou mais categorias para o usuário (ex.: Médico(a) e Diretoria) antes de clicar em Autorizar.
+              </p>
+            </div>
+          </div>
+
+          {pendingUsers.length === 0 ? (
+            <div className="p-8 text-center text-xs text-slate-500">
+              Nenhuma solicitação pendente de autorização no momento.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left border-collapse text-xs">
+                <thead>
+                  <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-medium">
+                    <th className="py-3 px-4">Solicitante</th>
+                    <th className="py-3 px-4">Solicitado em</th>
+                    <th className="py-3 px-4">Observação / Especialidade</th>
+                    <th className="py-3 px-4">Categorias a Liberar (RBAC)</th>
+                    <th className="py-3 px-4 text-right">Decisão</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {pendingUsers.map((u) => {
+                    const draftRoles = roleDrafts[u.id] || getRequestedRolesList(u);
+                    return (
+                      <tr key={u.id} className="hover:bg-slate-50/70 align-top">
+                        <td className="py-3 px-4">
+                          <div className="font-semibold text-slate-900">{u.name}</div>
+                          <div className="text-[11px] font-mono text-slate-500">{u.email}</div>
+                        </td>
+                        <td className="py-3 px-4 font-mono tabular-nums text-slate-500 whitespace-nowrap">
+                          {formatDateTimeBR(u.created_at)}
+                        </td>
+                        <td className="py-3 px-4 text-slate-600 max-w-[220px]">
+                          {u.specialty && <div className="font-medium text-slate-800">{u.specialty}</div>}
+                          <div className="text-[11px] text-slate-500">
+                            {u.approval_notes || `Solicitou: ${formatUserRoles(getRequestedRolesList(u))}`}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4">
+                          <div className="flex flex-wrap gap-1.5 max-w-[360px]">
+                            {ALL_ROLE_KEYS.map((rk) => {
+                              const checked = draftRoles.includes(rk);
+                              return (
+                                <label
+                                  key={rk}
+                                  className={`inline-flex items-center gap-1.5 px-2 py-1 rounded border text-[11px] cursor-pointer transition-colors ${
+                                    checked
+                                      ? 'bg-[#144A47]/10 border-[#144A47] text-[#144A47] font-medium'
+                                      : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() =>
+                                      setRoleDrafts((prev) => ({
+                                        ...prev,
+                                        [u.id]: toggleRoleInList(prev[u.id] || getRequestedRolesList(u), rk),
+                                      }))
+                                    }
+                                    className="accent-[#144A47]"
+                                  />
+                                  <span>{ROLE_LABELS[rk]}</span>
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </td>
+                        <td className="py-3 px-4 text-right whitespace-nowrap">
+                          <div className="inline-flex items-center gap-2">
+                            <button
+                              type="button"
+                              disabled={processingId === u.id}
+                              onClick={() => handleDecision(u, 'aprovar')}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md bg-[#144A47] hover:bg-[#0E3735] text-white font-medium cursor-pointer disabled:opacity-50"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              Autorizar
+                            </button>
+                            <button
+                              type="button"
+                              disabled={processingId === u.id}
+                              onClick={() => handleDecision(u, 'recusar')}
+                              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md border border-red-200 text-red-700 hover:bg-red-50 font-medium cursor-pointer disabled:opacity-50"
+                            >
+                              <XCircle className="w-3.5 h-3.5" />
+                              Recusar
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ) : subTab === 'usuarios' && isAdmin ? (
         <div className="bg-white border border-slate-200 rounded-xl overflow-x-auto">
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-medium">
                 <th className="py-3 px-4">Usuário</th>
-                <th className="py-3 px-4">Perfil de Acesso (RBAC)</th>
+                <th className="py-3 px-4">Categorias de Acesso (RBAC)</th>
+                <th className="py-3 px-4">Autorização</th>
                 <th className="py-3 px-4">Último Acesso</th>
                 <th className="py-3 px-4">Status</th>
                 <th className="py-3 px-4 text-right">Ações</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
-              {users.map((u) => (
-                <tr key={u.id} className="hover:bg-slate-50/70">
-                  <td className="py-3 px-4">
-                    <div className="font-medium text-slate-900">{u.name}</div>
-                    <div className="text-[11px] font-mono text-slate-500">
-                      {u.email}
-                      {u.specialty ? ` · ${u.specialty}` : ''}
-                    </div>
-                  </td>
-                  <td className="py-3 px-4">
-                    <select
-                      value={u.role}
-                      disabled={u.id === currentUser.id}
-                      onChange={(e) => changeUserRole(u, e.target.value as UserRole)}
-                      className="px-2.5 py-1.5 border border-slate-300 rounded-md bg-white disabled:bg-slate-50"
-                    >
-                      {(Object.keys(ROLE_LABELS) as UserRole[]).map((rk) => (
-                        <option key={rk} value={rk}>
-                          {ROLE_LABELS[rk]}
-                        </option>
-                      ))}
-                    </select>
-                  </td>
-                  <td className="py-3 px-4 font-mono tabular-nums text-slate-500">
-                    {formatDateTimeBR(u.last_login_at)}
-                  </td>
-                  <td className="py-3 px-4">
-                    <span className={u.active ? 'text-emerald-700 font-medium' : 'text-red-700'}>
-                      {u.active ? 'Ativo' : 'Inativo'}
-                    </span>
-                  </td>
-                  <td className="py-3 px-4 text-right">
-                    {u.id !== currentUser.id && (
-                      <button
-                        type="button"
-                        onClick={() => toggleUserActive(u)}
-                        className="text-[#0E5A75] hover:underline font-medium cursor-pointer"
-                      >
-                        {u.active ? 'Desativar' : 'Reativar'}
-                      </button>
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {users.map((u) => {
+                const userCategories = getUserRoles(u);
+                return (
+                  <tr key={u.id} className="hover:bg-slate-50/70">
+                    <td className="py-3 px-4">
+                      <div className="font-medium text-slate-900">{u.name}</div>
+                      <div className="text-[11px] font-mono text-slate-500">
+                        {u.email}
+                        {u.specialty ? ` · ${u.specialty}` : ''}
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        {userCategories.map((rk) => (
+                          <span
+                            key={rk}
+                            className="inline-block px-2 py-0.5 rounded bg-[#F7F5F0] border border-[#E5E1D8] text-[11px] font-medium text-[#144A47]"
+                          >
+                            {ROLE_LABELS[rk]}
+                          </span>
+                        ))}
+                        <button
+                          type="button"
+                          onClick={() => openEditCategories(u)}
+                          className="inline-flex items-center gap-1 px-2 py-0.5 rounded border border-slate-200 text-[11px] text-[#0E5A75] hover:bg-slate-50 cursor-pointer"
+                        >
+                          <Edit3 className="w-3 h-3" />
+                          Editar categorias
+                        </button>
+                      </div>
+                    </td>
+                    <td className="py-3 px-4">
+                      {u.approval_status === 'pendente' ? (
+                        <span className="text-amber-700 font-medium">Aguardando aprovação</span>
+                      ) : u.approval_status === 'recusado' ? (
+                        <span className="text-red-700 font-medium">Recusado</span>
+                      ) : (
+                        <span className="text-emerald-700 font-medium">
+                          Autorizado{u.approved_by ? ` (${u.approved_by})` : ''}
+                        </span>
+                      )}
+                    </td>
+                    <td className="py-3 px-4 font-mono tabular-nums text-slate-500">
+                      {formatDateTimeBR(u.last_login_at)}
+                    </td>
+                    <td className="py-3 px-4">
+                      <span className={u.active ? 'text-emerald-700 font-medium' : 'text-red-700'}>
+                        {u.active ? 'Ativo' : 'Inativo'}
+                      </span>
+                    </td>
+                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                      {u.id !== currentUser.id && u.approval_status === 'pendente' ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDecision(u, 'aprovar')}
+                          className="text-[#144A47] hover:underline font-semibold cursor-pointer mr-3"
+                        >
+                          Autorizar agora
+                        </button>
+                      ) : u.id !== currentUser.id && u.approval_status === 'recusado' ? (
+                        <button
+                          type="button"
+                          onClick={() => handleDecision(u, 'aprovar')}
+                          className="text-[#144A47] hover:underline font-medium cursor-pointer"
+                        >
+                          Reaprovar acesso
+                        </button>
+                      ) : u.id !== currentUser.id ? (
+                        <button
+                          type="button"
+                          onClick={() => toggleUserActive(u)}
+                          className="text-[#0E5A75] hover:underline font-medium cursor-pointer"
+                        >
+                          {u.active ? 'Desativar' : 'Reativar'}
+                        </button>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -249,7 +535,7 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
               <thead>
                 <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 font-medium">
                   <th className="py-3 px-4">Data / Hora</th>
-                  <th className="py-3 px-4">Usuário / Perfil</th>
+                  <th className="py-3 px-4">Usuário / Categorias</th>
                   <th className="py-3 px-4">Ação</th>
                   <th className="py-3 px-4">Módulo</th>
                   <th className="py-3 px-4">Detalhamento</th>
@@ -276,9 +562,109 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
         </div>
       )}
 
+      {/* Modal: Editar Categorias do Usuário Existente */}
+      {editingUser && (
+        <div className="fixed inset-0 z-50 bg-slate-950/40 flex items-center justify-center p-4">
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6">
+            <div className="flex items-center justify-between pb-4 border-b border-slate-100">
+              <div>
+                <h2 className="font-display text-lg font-bold text-slate-900">
+                  Categorias de Acesso — {editingUser.name}
+                </h2>
+                <p className="text-xs text-slate-500 mt-0.5">{editingUser.email}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setEditingUser(null)}
+                className="text-xs text-slate-500 cursor-pointer"
+              >
+                Fechar
+              </button>
+            </div>
+            <form onSubmit={handleSaveCategories} className="mt-4 space-y-4 text-xs">
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <label className="font-medium text-slate-700">
+                    Selecione 1 ou mais categorias para esta pessoa *
+                  </label>
+                  <span className="text-[11px] text-slate-500">Ex.: Médico(a) + Diretoria</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {ALL_ROLE_KEYS.map((rk) => {
+                    const checked = editRoles.includes(rk);
+                    const lockedSelfAdmin = editingUser.id === currentUser.id && rk === 'admin' && checked;
+                    return (
+                      <label
+                        key={rk}
+                        className={`flex items-center gap-2 px-3 py-2 rounded-lg border cursor-pointer transition-colors ${
+                          checked
+                            ? 'bg-[#144A47]/10 border-[#144A47] text-[#144A47] font-medium'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                        } ${lockedSelfAdmin ? 'opacity-75 cursor-not-allowed' : ''}`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          disabled={lockedSelfAdmin}
+                          onChange={() =>
+                            setEditRoles((prev) =>
+                              toggleRoleInList(prev, rk, editingUser.id === currentUser.id)
+                            )
+                          }
+                          className="accent-[#144A47]"
+                        />
+                        <span>{ROLE_LABELS[rk]}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+
+              {(hasHealthInEdit || editSpecialty.trim().length > 0) && (
+                <div>
+                  <label className="block font-medium text-slate-700 mb-1">
+                    Especialidade / Registro (Saúde)
+                  </label>
+                  <input
+                    type="text"
+                    value={editSpecialty}
+                    onChange={(e) => setEditSpecialty(e.target.value)}
+                    placeholder="Ex.: Pediatria · CRM ou Psicologia · CRP"
+                    className="w-full px-3 py-2 border border-slate-300 rounded-lg"
+                  />
+                </div>
+              )}
+
+              <div className="pt-2 border-t border-slate-100 flex items-center justify-between gap-2">
+                <span className="text-[11px] text-slate-500">
+                  Selecionadas: <strong className="text-slate-800">{formatUserRoles(editRoles)}</strong>
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditingUser(null)}
+                    className="py-2 px-4 border border-slate-300 rounded-lg text-slate-700 cursor-pointer"
+                  >
+                    Cancelar
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit}
+                    className="py-2 px-4 bg-[#144A47] hover:bg-[#0E3735] text-white font-medium rounded-lg cursor-pointer disabled:opacity-50"
+                  >
+                    {savingEdit ? 'Salvando...' : 'Salvar Categorias'}
+                  </button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Criar Novo Usuário com 1 ou mais categorias */}
       {showModal && (
         <div className="fixed inset-0 z-50 bg-slate-950/40 flex items-center justify-center p-4">
-          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-md p-6">
+          <div className="bg-white border border-slate-200 rounded-xl w-full max-w-lg p-6">
             <div className="flex items-center justify-between pb-4 border-b border-slate-100">
               <h2 className="font-display text-lg font-bold text-slate-900">Criar Conta de Usuário</h2>
               <button type="button" onClick={() => setShowModal(false)} className="text-xs text-slate-500 cursor-pointer">
@@ -307,31 +693,47 @@ export function AdminView({ currentUser }: { currentUser: AuthUser }) {
                 />
               </div>
               <div>
-                <label className="block font-medium text-slate-700 mb-1">Perfil de acesso *</label>
-                <select
-                  value={form.role}
-                  onChange={(e) => {
-                    const nextRole = e.target.value as UserRole;
-                    const defaultSpec =
-                      nextRole === 'psicologo'
-                        ? 'Psicologia'
-                        : nextRole === 'medico'
-                          ? 'Pediatria / Clínica Médica'
-                          : nextRole === 'saude'
-                            ? form.specialty || 'Saúde'
-                            : '';
-                    setForm({ ...form, role: nextRole, specialty: defaultSpec });
-                  }}
-                  className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white"
-                >
-                  {(Object.keys(ROLE_LABELS) as UserRole[]).map((rk) => (
-                    <option key={rk} value={rk}>
-                      {ROLE_LABELS[rk]}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block font-medium text-slate-700">Categorias de acesso *</label>
+                  <span className="text-[11px] text-slate-500">Marque 1 ou mais</span>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {ALL_ROLE_KEYS.map((rk) => {
+                    const checked = form.roles.includes(rk);
+                    return (
+                      <label
+                        key={rk}
+                        className={`flex items-center gap-2 px-2.5 py-2 rounded-lg border cursor-pointer transition-colors ${
+                          checked
+                            ? 'bg-[#144A47]/10 border-[#144A47] text-[#144A47] font-medium'
+                            : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50'
+                        }`}
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={() => {
+                            const nextRoles = toggleRoleInList(form.roles, rk);
+                            const defaultSpec =
+                              form.specialty ||
+                              (nextRoles.includes('psicologo')
+                                ? 'Psicologia'
+                                : nextRoles.includes('medico')
+                                  ? 'Pediatria / Clínica Médica'
+                                  : nextRoles.includes('saude')
+                                    ? 'Saúde'
+                                    : '');
+                            setForm({ ...form, roles: nextRoles, specialty: defaultSpec });
+                          }}
+                          className="accent-[#144A47]"
+                        />
+                        <span>{ROLE_LABELS[rk]}</span>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
-              {(form.role === 'saude' || form.role === 'psicologo' || form.role === 'medico') && (
+              {hasHealthInCreate && (
                 <div>
                   <label className="block font-medium text-slate-700 mb-1">Especialidade / Registro (Saúde)</label>
                   <input

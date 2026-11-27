@@ -9,7 +9,7 @@ import {
 } from 'lucide-react';
 import { apiRequest } from '../lib/api';
 import { exportToExcelCSV, exportToPDF, formatBRL, formatDateBR } from '../lib/format';
-import { FINANCE_ROLES, HEALTH_ROLES, type UserRole } from '../types';
+import { FINANCE_ROLES, HEALTH_ROLES, hasAnyRole, type RoleInput } from '../types';
 
 type ReportKey =
   | 'criancas'
@@ -123,7 +123,7 @@ interface ReportsPayload {
   }[];
 }
 
-export function ReportsView({ role }: { role: UserRole }) {
+export function ReportsView({ role }: { role: RoleInput }) {
   const [selected, setSelected] = useState<ReportKey>('criancas');
   const [startDate, setStartDate] = useState('2026-01-01');
   const [endDate, setEndDate] = useState('2026-12-31');
@@ -143,8 +143,8 @@ export function ReportsView({ role }: { role: UserRole }) {
   const [customHeaderSubtitle, setCustomHeaderSubtitle] = useState('Prestação de Contas Instituto SER');
   const [hiddenColsByReport, setHiddenColsByReport] = useState<Partial<Record<ReportKey, string[]>>>({});
 
-  const canSeeFinance = FINANCE_ROLES.includes(role);
-  const canSeeHealth = HEALTH_ROLES.includes(role);
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
 
   useEffect(() => {
     setLoading(true);

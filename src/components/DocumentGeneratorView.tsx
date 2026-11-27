@@ -10,11 +10,12 @@ import {
 import {
   FINANCE_ROLES,
   HEALTH_ROLES,
+  hasAnyRole,
   type Donor,
   type Patient,
   type Project,
+  type RoleInput,
   type Student,
-  type UserRole,
   type Volunteer,
 } from '../types';
 import { BrandLogo, BrandStrip } from './BrandLogo';
@@ -63,9 +64,9 @@ const TEMPLATES: TemplateOption[] = [
   },
 ];
 
-export function DocumentGeneratorView({ role }: { role: UserRole }) {
-  const canSeeFinance = FINANCE_ROLES.includes(role);
-  const canSeeHealth = HEALTH_ROLES.includes(role);
+export function DocumentGeneratorView({ role }: { role: RoleInput }) {
+  const canSeeFinance = hasAnyRole(role, FINANCE_ROLES);
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
 
   const availableTemplates = TEMPLATES.filter((t) => {
     if (t.restricted === 'finance' && !canSeeFinance) return false;

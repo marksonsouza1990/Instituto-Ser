@@ -18,11 +18,12 @@ import { apiRequest } from '../lib/api';
 import { formatDateBR, generateInstitutionalDocumentPDF } from '../lib/format';
 import {
   HEALTH_ROLES,
+  hasAnyRole,
   type Appointment,
   type MedicalRecord,
   type Patient,
+  type RoleInput,
   type Student,
-  type UserRole,
 } from '../types';
 
 const MEDICAL_CHECKLIST_ITEMS: { key: string; label: string }[] = [
@@ -48,7 +49,7 @@ const ALL_CHECKLIST_LABELS: Record<string, string> = Object.fromEntries([
   ...PSYCH_CHECKLIST_ITEMS.map((i) => [i.key, i.label]),
 ]);
 
-export function HealthView({ role }: { role: UserRole }) {
+export function HealthView({ role }: { role: RoleInput }) {
   const [subTab, setSubTab] = useState<'pacientes' | 'consultas' | 'prontuario'>('pacientes');
   const [patients, setPatients] = useState<Patient[]>([]);
   const [appointments, setAppointments] = useState<Appointment[]>([]);
@@ -96,11 +97,13 @@ export function HealthView({ role }: { role: UserRole }) {
     showChecklistInReport: true,
   });
 
-  const canAccessMedicalRecords = HEALTH_ROLES.includes(role);
-  const canWritePatient = HEALTH_ROLES.includes(role);
+  const canAccessMedicalRecords = hasAnyRole(role, HEALTH_ROLES);
+  const canWritePatient = hasAnyRole(role, HEALTH_ROLES);
+  const isMedico = hasAnyRole(role, ['medico']);
+  const isPsicologo = hasAnyRole(role, ['psicologo']);
 
   const defaultRecordType: 'Médico' | 'Psicológico' =
-    role === 'medico' ? 'Médico' : 'Psicológico';
+    isMedico ? 'Médico' : 'Psicológico';
 
   // Modal: Novo Paciente
   const [showPatientModal, setShowPatientModal] = useState(false);
@@ -112,8 +115,8 @@ export function HealthView({ role }: { role: UserRole }) {
     cpf: '',
     guardian_name: '',
     contact_phone: '',
-    responsible_professional: role === 'medico' ? 'Dr. Rafael Mendes' : 'Dra. Beatriz Alencar',
-    specialty: role === 'medico' ? 'Pediatria' : 'Psicologia',
+    responsible_professional: isMedico ? 'Dr. Rafael Mendes' : 'Dra. Beatriz Alencar',
+    specialty: isMedico ? 'Pediatria' : 'Psicologia',
     follow_up_status: 'Em acompanhamento',
     blood_type: '',
     emergency_contact: '',
@@ -126,8 +129,8 @@ export function HealthView({ role }: { role: UserRole }) {
   const [showAppModal, setShowAppModal] = useState(false);
   const [aForm, setAForm] = useState({
     patient_id: '',
-    professional_name: role === 'medico' ? 'Dr. Rafael Mendes' : 'Dra. Beatriz Alencar',
-    specialty: role === 'medico' ? 'Pediatria' : 'Psicologia',
+    professional_name: isMedico ? 'Dr. Rafael Mendes' : 'Dra. Beatriz Alencar',
+    specialty: isMedico ? 'Pediatria' : 'Psicologia',
     scheduled_date: '2026-11-26',
     scheduled_time: '10:00',
     status: 'Agendada',
@@ -168,7 +171,7 @@ export function HealthView({ role }: { role: UserRole }) {
     interacao_comportamento: '',
   });
   const [mForm, setMForm] = useState({
-    specialty: role === 'medico' ? 'Pediatria' : 'Psicologia',
+    specialty: isMedico ? 'Pediatria' : 'Psicologia',
     recorded_at: '2026-11-23',
     evolution_text: '',
     professional_notes: '',
@@ -232,9 +235,9 @@ export function HealthView({ role }: { role: UserRole }) {
     setSuccessMsg(null);
 
     const inferredMode: 'Médico' | 'Psicológico' =
-      role === 'medico'
+      isMedico && !isPsicologo
         ? 'Médico'
-        : role === 'psicologo'
+        : isPsicologo && !isMedico
           ? 'Psicológico'
           : pat.specialty.toLowerCase().includes('psic')
             ? 'Psicológico'

@@ -24,11 +24,12 @@ import { apiRequest } from '../lib/api';
 import { exportToPDF, formatDateBR } from '../lib/format';
 import {
   HEALTH_ROLES,
+  hasAnyRole,
   type AgendaData,
   type Appointment,
   type AttendanceClass,
   type InstitutionalEvent,
-  type UserRole,
+  type RoleInput,
 } from '../types';
 
 type ViewMode = 'semanal' | 'mensal' | 'lista';
@@ -247,9 +248,9 @@ const CATEGORY_META: Record<
   },
 };
 
-export function AgendaView({ role }: { role: UserRole }) {
-  const canSeeHealth = HEALTH_ROLES.includes(role);
-  const canCreateEvents = ['admin', 'diretoria', 'coordenacao_social'].includes(role);
+export function AgendaView({ role }: { role: RoleInput }) {
+  const canSeeHealth = hasAnyRole(role, HEALTH_ROLES);
+  const canCreateEvents = hasAnyRole(role, ['admin', 'diretoria', 'coordenacao_social']);
 
   const [data, setData] = useState<AgendaData | null>(null);
   const [loading, setLoading] = useState(true);
