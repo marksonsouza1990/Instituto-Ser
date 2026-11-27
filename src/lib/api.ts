@@ -42,33 +42,46 @@ export async function apiRequest<T>(
       headers,
     });
     const contentType = res.headers.get('content-type') || '';
+    const isNonJson = !contentType.includes('application/json');
     const isTransientProxyMiss =
-      !res.ok &&
-      !contentType.includes('application/json') &&
-      (res.status === 404 || res.status === 502 || res.status === 503 || res.status === 504);
+      isNonJson &&
+      (res.ok || res.status === 404 || res.status === 502 || res.status === 503 || res.status === 504);
     if (!isTransientProxyMiss || attempt === 2) {
       break;
     }
     await new Promise((resolve) => setTimeout(resolve, 900));
   }
 
-  if (!res || !res.ok) {
+  const contentType = res?.headers.get('content-type') || '';
+  const isNonJson = !contentType.includes('application/json');
+  const resolvedUrl = res?.url || (typeof window !== 'undefined' ? `${window.location.origin}${path}` : path);
+
+  if (!res || !res.ok || isNonJson) {
     const status = res?.status ?? 0;
-    const contentType = res?.headers.get('content-type') || '';
-    const isNonJson = !contentType.includes('application/json');
-    let message =
-      status === 404 && isNonJson
-        ? `Serviço da API indisponível no endereço atual (404 em ${path}). Recarregue a página; se estiver usando um link compartilhado ou publicado, republique o app para ativar o servidor.`
-        : `Erro na solicitação (${status})`;
+    let bodySnippet = '';
+    let apiErrorMsg = '';
     try {
-      if (!isNonJson) {
-        const errData = (await res?.json()) as { error?: string } | undefined;
-        if (errData?.error) message = errData.error;
+      if (!isNonJson && res) {
+        const errData = (await res.json()) as { error?: string } | undefined;
+        if (errData?.error) apiErrorMsg = errData.error;
+      } else if (res) {
+        const rawText = await res.text();
+        bodySnippet = rawText
+          .replace(/<[^>]+>/g, ' ')
+          .replace(/\s+/g, ' ')
+          .trim()
+          .slice(0, 120);
       }
     } catch {
-      // ignore json parse errors
+      // ignore parse errors
     }
-    throw new ApiError(message, status, isNonJson, path);
+
+    let message = apiErrorMsg || `Erro na solicitação (${status})`;
+    if (!apiErrorMsg && isNonJson) {
+      const snippetPart = bodySnippet ? ` · Resposta: "${bodySnippet}"` : '';
+      message = `Serviço da API indisponível (${status} em ${resolvedUrl} · tipo: ${contentType || 'desconhecido'}${snippetPart}). Recarregue a página ou abra pela URL de desenvolvimento do aplicativo.`;
+    }
+    throw new ApiError(message, status, isNonJson, resolvedUrl);
   }
 
   return (await res.json()) as T;
