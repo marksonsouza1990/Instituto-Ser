@@ -1,7 +1,7 @@
 import crypto from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
-import { db } from './db.ts';
-import type { UserRole } from '../src/types.ts';
+import { db } from './db.js';
+import type { UserRole } from '../src/types.js';
 
 const EPHEMERAL_SECRET = crypto.randomBytes(32).toString('hex');
 
