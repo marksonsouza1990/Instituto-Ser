@@ -1,4 +1,4 @@
-import { db } from './db.ts';
+import { db } from './db.js';
 
 export function seedActivityTypesIfEmpty(): void {
   const existingTypes = db.prepare(`SELECT COUNT(*) as cnt FROM activity_types`).get() as {

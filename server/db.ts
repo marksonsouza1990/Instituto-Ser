@@ -2,7 +2,8 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'node:fs';
 import path from 'node:path';
 
-const dataDir = path.resolve(process.cwd(), 'data');
+// Vercel Functions only allow writes under /tmp; data there is per-instance and not durable.
+const dataDir = process.env.VERCEL ? '/tmp/instituto-ser-data' : path.resolve(process.cwd(), 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }

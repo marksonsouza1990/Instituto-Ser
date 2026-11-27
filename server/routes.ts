@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { Express, Response } from 'express';
-import { db, logAudit } from './db.ts';
+import { db, logAudit } from './db.js';
 import {
   type AuthRequest,
   VALID_ROLES,
@@ -12,8 +12,8 @@ import {
   requireRole,
   signAuthToken,
   verifyPassword,
-} from './auth.ts';
-import type { DashboardPeriod, UserRole } from '../src/types.ts';
+} from './auth.js';
+import type { DashboardPeriod, UserRole } from '../src/types.js';
 
 const FINANCE_ROLES: UserRole[] = ['admin', 'financeiro'];
 const HEALTH_ROLES: UserRole[] = ['admin', 'saude', 'psicologo', 'medico'];
